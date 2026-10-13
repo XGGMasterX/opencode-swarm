@@ -63,22 +63,71 @@ jobs:
       - name: Build all packages
         run: bun run build
 
+      # Publish steps fail closed (issue #3150): `set -eo pipefail` propagates
+      # npm's exit status through tee, and any publish failure fails the job.
+      # The historical `... | tee; grep -q 'E403|already exists' && echo || cat`
+      # form exited 0 on EVERY failure (pipeline status was tee's; the trailing
+      # compound always succeeded) — the silent-skip class that froze
+      # core@8.0.0-beta.0 on the next dist-tag. The E403/already-exists
+      # tolerance is retained ONLY for explicit force_publish retries
+      # (workflow_dispatch with force_publish=true), where unchanged versions
+      # are expected to skip.
       - name: Publish @opencode-swarm/telemetry (next)
-        run: cd packages/telemetry && npm publish --tag next --access public 2>&1 | tee /tmp/pub.log; grep -q 'E403\|already exists' /tmp/pub.log && echo "Already published, skipping" || cat /tmp/pub.log
+        run: |
+          set -eo pipefail
+          cd packages/telemetry
+          if ! npm publish --tag next --access public 2>&1 | tee /tmp/pub.log; then
+            if [ "${{ inputs.force_publish }}" = "true" ] && grep -q 'E403\|already exists' /tmp/pub.log; then
+              echo "Already published, skipping (force_publish retry)"
+            else
+              echo "::error::npm publish failed for @opencode-swarm/telemetry"
+              exit 1
+            fi
+          fi
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Publish @opencode-swarm/core (next)
-        run: cd packages/core && npm publish --tag next --access public 2>&1 | tee /tmp/pub.log; grep -q 'E403\|already exists' /tmp/pub.log && echo "Already published, skipping" || cat /tmp/pub.log
+        run: |
+          set -eo pipefail
+          cd packages/core
+          if ! npm publish --tag next --access public 2>&1 | tee /tmp/pub.log; then
+            if [ "${{ inputs.force_publish }}" = "true" ] && grep -q 'E403\|already exists' /tmp/pub.log; then
+              echo "Already published, skipping (force_publish retry)"
+            else
+              echo "::error::npm publish failed for @opencode-swarm/core"
+              exit 1
+            fi
+          fi
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Publish @opencode-swarm/claude-code (next)
-        run: cd packages/claude-code && npm publish --tag next --access public 2>&1 | tee /tmp/pub.log; grep -q 'E403\|already exists' /tmp/pub.log && echo "Already published, skipping" || cat /tmp/pub.log
+        run: |
+          set -eo pipefail
+          cd packages/claude-code
+          if ! npm publish --tag next --access public 2>&1 | tee /tmp/pub.log; then
+            if [ "${{ inputs.force_publish }}" = "true" ] && grep -q 'E403\|already exists' /tmp/pub.log; then
+              echo "Already published, skipping (force_publish retry)"
+            else
+              echo "::error::npm publish failed for @opencode-swarm/claude-code"
+              exit 1
+            fi
+          fi
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Publish opencode-swarm (next)
-        run: cd packages/opencode && npm publish --tag next --access public 2>&1 | tee /tmp/pub.log; grep -q 'E403\|already exists' /tmp/pub.log && echo "Already published, skipping" || cat /tmp/pub.log
+        run: |
+          set -eo pipefail
+          cd packages/opencode
+          if ! npm publish --tag next --access public 2>&1 | tee /tmp/pub.log; then
+            if [ "${{ inputs.force_publish }}" = "true" ] && grep -q 'E403\|already exists' /tmp/pub.log; then
+              echo "Already published, skipping (force_publish retry)"
+            else
+              echo "::error::npm publish failed for opencode-swarm"
+              exit 1
+            fi
+          fi
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

@@ -1,28 +1,36 @@
 {
   "release-type": "node",
-  "include-component-in-tag": false,
+  "include-component-in-tag": true,
   "changelog-notes-type": "github",
-  "plugins": ["node-workspace"],
+  "plugins": [
+    "node-workspace",
+    {
+      "type": "linked-versions",
+      "groupName": "opencode-swarm",
+      "components": ["opencode", "core", "claude-code", "telemetry"]
+    }
+  ],
   "packages": {
     "packages/opencode": {
       "release-type": "node",
-      "package-name": "opencode-swarm"
+      "package-name": "opencode-swarm",
+      "component": "opencode"
     },
     "packages/core": {
       "release-type": "node",
-      "package-name": "@opencode-swarm/core"
+      "package-name": "@opencode-swarm/core",
+      "component": "core"
     },
     "packages/claude-code": {
       "release-type": "node",
-      "package-name": "@opencode-swarm/claude-code"
+      "package-name": "@opencode-swarm/claude-code",
+      "component": "claude-code"
     },
     "packages/telemetry": {
       "release-type": "node",
-      "package-name": "@opencode-swarm/telemetry"
+      "package-name": "@opencode-swarm/telemetry",
+      "component": "telemetry"
     }
   },
-  "branches": [
-    { "branch": "main" },
-    { "branch": "next", "prerelease": true, "prerelease-type": "beta" }
-  ]
+  "bootstrap-sha": "98b020168298679467bce6d5d20ce1fbdf62c06b"
 }
