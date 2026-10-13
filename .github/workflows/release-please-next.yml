@@ -68,16 +68,19 @@ jobs:
       # The historical `... | tee; grep -q 'E403|already exists' && echo || cat`
       # form exited 0 on EVERY failure (pipeline status was tee's; the trailing
       # compound always succeeded) — the silent-skip class that froze
-      # core@8.0.0-beta.0 on the next dist-tag. The E403/already-exists
-      # tolerance is retained ONLY for explicit force_publish retries
+      # core@8.0.0-beta.0 on the next dist-tag. The version-conflict
+      # tolerance ("cannot publish over the previously published versions" /
+      # "already exists") is retained ONLY for explicit force_publish retries
       # (workflow_dispatch with force_publish=true), where unchanged versions
-      # are expected to skip.
+      # are expected to skip. The pattern is deliberately message-specific:
+      # npm emits code E403 for genuine authorization failures too, and those
+      # must NOT be skipped.
       - name: Publish @opencode-swarm/telemetry (next)
         run: |
           set -eo pipefail
           cd packages/telemetry
           if ! npm publish --tag next --access public 2>&1 | tee /tmp/pub.log; then
-            if [ "${{ inputs.force_publish }}" = "true" ] && grep -q 'E403\|already exists' /tmp/pub.log; then
+            if [ "${{ inputs.force_publish }}" = "true" ] && grep -q 'cannot publish over the previously published versions\|already exists' /tmp/pub.log; then
               echo "Already published, skipping (force_publish retry)"
             else
               echo "::error::npm publish failed for @opencode-swarm/telemetry"
@@ -92,7 +95,7 @@ jobs:
           set -eo pipefail
           cd packages/core
           if ! npm publish --tag next --access public 2>&1 | tee /tmp/pub.log; then
-            if [ "${{ inputs.force_publish }}" = "true" ] && grep -q 'E403\|already exists' /tmp/pub.log; then
+            if [ "${{ inputs.force_publish }}" = "true" ] && grep -q 'cannot publish over the previously published versions\|already exists' /tmp/pub.log; then
               echo "Already published, skipping (force_publish retry)"
             else
               echo "::error::npm publish failed for @opencode-swarm/core"
@@ -107,7 +110,7 @@ jobs:
           set -eo pipefail
           cd packages/claude-code
           if ! npm publish --tag next --access public 2>&1 | tee /tmp/pub.log; then
-            if [ "${{ inputs.force_publish }}" = "true" ] && grep -q 'E403\|already exists' /tmp/pub.log; then
+            if [ "${{ inputs.force_publish }}" = "true" ] && grep -q 'cannot publish over the previously published versions\|already exists' /tmp/pub.log; then
               echo "Already published, skipping (force_publish retry)"
             else
               echo "::error::npm publish failed for @opencode-swarm/claude-code"
@@ -122,7 +125,7 @@ jobs:
           set -eo pipefail
           cd packages/opencode
           if ! npm publish --tag next --access public 2>&1 | tee /tmp/pub.log; then
-            if [ "${{ inputs.force_publish }}" = "true" ] && grep -q 'E403\|already exists' /tmp/pub.log; then
+            if [ "${{ inputs.force_publish }}" = "true" ] && grep -q 'cannot publish over the previously published versions\|already exists' /tmp/pub.log; then
               echo "Already published, skipping (force_publish retry)"
             else
               echo "::error::npm publish failed for opencode-swarm"

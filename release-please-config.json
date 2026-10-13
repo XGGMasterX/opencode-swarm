@@ -1,7 +1,6 @@
 {
   "release-type": "node",
   "include-component-in-tag": true,
-  "changelog-notes-type": "github",
   "plugins": [
     "node-workspace",
     {
