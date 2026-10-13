@@ -112,20 +112,33 @@ describe('release-please config (issue #3150 release enablement)', () => {
 			stderr: 'ignore',
 		});
 		if (shallow.exitCode === 0 && shallow.stdout.toString().trim() === 'true') {
-			console.log(`skip: shallow checkout cannot resolve ${REQUIRED_BOOTSTRAP_SHA.slice(0, 8)} - ancestry unverified here`);
+			console.log(`skip: shallow checkout cannot verify the ancestry of ${REQUIRED_BOOTSTRAP_SHA.slice(0, 8)} - run in a full clone to exercise this leg`);
 			return;
 		}
 		expect(gitExitCode(['cat-file', '-e', `${REQUIRED_BOOTSTRAP_SHA}^{commit}`]), 'bootstrap-sha must resolve in a full clone (bogus/rewritten sha is a config defect)').toBe(0);
 		expect(gitExitCode(['merge-base', '--is-ancestor', REQUIRED_BOOTSTRAP_SHA, 'HEAD']), 'bootstrap-sha must be an ancestor of HEAD').toBe(0);
 		// No BREAKING CHANGE commit may exist after the bound: one would force
-		// a major bump back onto the 9.0.0-beta.0 misfire path.
-		const breaking = Bun.spawnSync(['git', '-C', REPO_ROOT, 'log', '--format=%B', `${REQUIRED_BOOTSTRAP_SHA}..HEAD`], {
+		// a major bump back onto the 9.0.0-beta.0 misfire path. Conventional
+		// commits express breaking two ways - a `BREAKING CHANGE:` TRAILER
+		// (parsed by git trailers, immune to prose mentions in commit bodies)
+		// or a `!` before the colon in the subject's type position.
+		const trailers = Bun.spawnSync(
+			['git', '-C', REPO_ROOT, 'log', '--format=%H|%-(trailers:key=BREAKING CHANGE,valueonly)', `${REQUIRED_BOOTSTRAP_SHA}..HEAD`],
+			{ stdout: 'pipe', stderr: 'ignore' },
+		);
+		expect(trailers.exitCode).toBe(0);
+		const trailerBreaking = trailers.stdout.toString().split('\n').filter((line) => {
+			const value = line.slice(line.indexOf('|') + 1).trim();
+			return line.includes('|') && value !== '';
+		});
+		expect(trailerBreaking, `commits with a BREAKING CHANGE trailer after the bound: ${trailerBreaking.join('; ')}`).toEqual([]);
+		const subjects = Bun.spawnSync(['git', '-C', REPO_ROOT, 'log', '--format=%s', `${REQUIRED_BOOTSTRAP_SHA}..HEAD`], {
 			stdout: 'pipe',
 			stderr: 'ignore',
 		});
-		expect(breaking.exitCode).toBe(0);
-		const breakingCount = breaking.stdout.toString().split('\n').filter((line) => line.includes('BREAKING CHANGE')).length;
-		expect(breakingCount, 'no BREAKING CHANGE commit may exist after the bootstrap bound').toBe(0);
+		expect(subjects.exitCode).toBe(0);
+		const bangBreaking = subjects.stdout.toString().split('\n').filter((line) => /^[a-zA-Z]+(\([^)]*\))?!:/.test(line));
+		expect(bangBreaking, `breaking-by-syntax subjects after the bound: ${bangBreaking.join('; ')}`).toEqual([]);
 		// Per-package coverage: each package needs >=1 commit after the bound,
 		// or the lockstep release strands it on its published version.
 		for (const pkgPath of Object.keys(EXPECTED_COMPONENT_BY_PATH)) {

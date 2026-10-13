@@ -80,32 +80,50 @@ describe('release-please-next publish steps (issue #3150 silent-skip guard)', ()
 		}
 	});
 
-	test('every publish step propagates failures: pipefail enabled AND an explicit exit 1 on a real code line', () => {
+	test('every publish step propagates failures: statement-shaped pipefail, if-guarded pipeline, and a reachable exit 1', () => {
 		const steps = collectPublishSteps();
 		expect(steps.length).toBeGreaterThan(0);
 		for (const { name, text } of steps) {
-			// pipefail must be enabled explicitly (either spelling) on a
-			// non-comment line; a bare `exit 1` alone could sit on a branch
-			// that never runs.
-			expect(/set +-eo pipefail|set +-o pipefail/.test(text), `${name}: pipefail must be enabled`).toBe(true);
-			expect(/\bexit 1\b/.test(text), `${name}: must contain an explicit exit 1`).toBe(true);
+			// Line-SHAPED assertions, not token presence: each required construct
+			// must appear as a real statement line (comments are already
+			// stripped), so `true # set -eo pipefail`, an `echo "..."` string
+			// embedding the tokens, or an unreachable `if false; then exit 1; fi`
+			// arm all fail.
+			const codeLines = text.split('\n');
+			const pipefailStatement = codeLines.find((ln) => {
+				const t = ln.trim();
+				return /^set\s+-e/.test(t) && /pipefail/.test(t);
+			});
+			expect(pipefailStatement, `${name}: a real 'set ... pipefail' statement line is required`).toBeTypeOf('string');
+			const pipelineGuard = codeLines.find((ln) => /^\s*if ! npm publish .*\| tee \/tmp\/pub\.log; then$/.test(ln));
+			expect(pipelineGuard, `${name}: npm publish must run inside 'if ! npm publish ... | tee /tmp/pub.log; then'`).toBeTypeOf('string');
+			const exitLine = codeLines.find((ln) => ln.trim() === 'exit 1');
+			expect(exitLine, `${name}: an exact 'exit 1' statement line is required`).toBeTypeOf('string');
 		}
 	});
 
 	test('the version-conflict tolerance is gated on the force_publish input', () => {
 		const steps = collectPublishSteps();
 		for (const { name, text } of steps) {
-			expect(text.includes(TOLERANCE_PATTERN), `${name}: tolerance must use the message-specific conflict pattern`).toBe(true);
-			expect(text.includes('inputs.force_publish'), `${name}: tolerance must reference inputs.force_publish`).toBe(true);
-			expect(text.includes('|| cat /tmp/pub.log'), `${name}: ungated || cat masking must not remain`).toBe(false);
+			const codeLines = text.split('\n');
+			// The gate must be ONE condition line that binds BOTH the input and
+			// the message-specific tolerance pattern — a mention of the input
+			// anywhere else (echo, comment, separate branch) does not gate the
+			// tolerance.
+			const gateLine = codeLines.find(
+				(ln) => ln.trim().startsWith('if [') && ln.includes('inputs.force_publish') && ln.includes(TOLERANCE_PATTERN),
+			);
+			expect(gateLine, `${name}: the tolerance grep must be gated by 'if [ "...inputs.force_publish..." = "true" ] && grep' on a single line`).toBeTypeOf('string');
+			expect(gateLine.includes('|| cat /tmp/pub.log'), `${name}: ungated || cat masking must not remain`).toBe(false);
 		}
 	});
 
-	test('no publish step neutralizes its own failure via continue-on-error', () => {
-		const steps = collectPublishSteps();
-		for (const { name, text } of steps) {
-			expect(/continue-on-error\s*:/.test(text), `${name}: continue-on-error must not appear (it would neutralize exit 1)`).toBe(false);
-		}
+	test('continue-on-error appears nowhere in the workflow (step-level, quoted, or job-level)', () => {
+		// A raw-text scan: job-level and quoted ("continue-on-error": true)
+		// variants hide outside individual step blocks, and any form would
+		// neutralize the fail-closed exit this file guards.
+		const raw = readFileSync(WORKFLOW_PATH, 'utf8');
+		expect(raw.includes('continue-on-error'), 'continue-on-error must not appear anywhere in the workflow').toBe(false);
 	});
 
 	test('the publish job is gated on a release existing or an explicit force_publish dispatch', () => {
