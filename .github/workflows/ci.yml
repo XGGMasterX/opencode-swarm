@@ -504,10 +504,15 @@ jobs:
         shard: [1, 2, 3, 4, 5, 6]
     runs-on: ${{ matrix.os }}
     # 40m: was 90m before sharding (PR #1245). Issue #1778 H4 wired the
-    # previously-orphaned src/** + tests/adversarial trees into this job (~1666
-    # files total), so shards went 4→6 to keep per-shard file counts (~278) at or
-    # below the prior 4-shard level (~342). Per-shard runtime stays ~7-15 min on
-    # ubuntu/macOS and ~20-25 min on Windows (4-7× slower runners). 40m headroom.
+    # previously-orphaned src/** + tests/adversarial trees into this job, and
+    # shards went 4→6 at that point. The gated inventory has since grown to
+    # ~4,100 files (measured 2026-10-18: 4,118 on Linux, 4,112 on Windows after
+    # quarantines), i.e. ~685 files per shard across 6 shards. Windows unit cells
+    # now take ~19-37 min (median ~29 min, test step median ~1650 s; 84 executed
+    # cells across 14 merge_group runs incl. 4 that failed on test results,
+    # measured 2026-10-18), so the 40m timeout leaves as little as ~3 min of
+    # headroom there; re-evaluate the shard count or timeout before the
+    # inventory grows much further.
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
@@ -917,11 +922,11 @@ jobs:
       matrix:
         shard: [1, 2, 3, 4, 5, 6]
     runs-on: ubuntu-latest
-    # 30m: a typical shard is ~12 min (cached install + build + ~278 per-file
-    # coverage runs at ~1.6 s each); the per-file retry budget (2 retries at up
-    # to 60 s each) can add minutes on a flaky window, and a false-positive
-    # shard cancellation costs the whole merge group a requeue — headroom is
-    # cheaper than that (issue #2341).
+    # 30m: a typical shard is ~14 min (cached install + build + ~686 per-file
+    # coverage runs; coverage step median ~13 min / ~768 s); the per-file retry
+    # budget (2 retries at up to 60 s each) can add minutes on a flaky window,
+    # and a false-positive shard cancellation costs the whole merge group a
+    # requeue — headroom is cheaper than that (issue #2341).
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
