@@ -44,6 +44,7 @@ Most behavior is controlled by `opencode-swarm.json`. Environment variables are 
 | `TAVILY_API_KEY` | General Council web search | Tavily credential used when `council.general.searchApiKey` is unset and `searchProvider` is `tavily`. |
 | `BRAVE_SEARCH_API_KEY` | General Council web search | Brave Search credential used when `council.general.searchApiKey` is unset and `searchProvider` is `brave`. |
 | `OPENCODE_SWARM_DEBUG=1` | Debug logger | Enables debug-gated log output. Keep disabled for normal use. |
+| `OPENCODE_SWARM_VERSION_BANNER=1` | Startup version banner | Restores the raw stderr `[opencode-swarm] running vX.Y.Z` startup line (default off; the banner otherwise appears only under `OPENCODE_SWARM_DEBUG=1`, in the debug logger's stdout output). Use for headless/CLI stale-cache diagnosis — identifying which cached plugin version actually loaded (issue #2236). The raw stderr leg is off by default because the TUI renders plugin stderr as an overlay (issue #3405). |
 | `DEBUG_SWARM=1` | Startup and hook diagnostics | Enables additional startup, hook, and plan-manager diagnostics. Keep disabled unless debugging plugin behavior. |
 | `OPENCODE_SWARM_ID` | Diagnose service | Identifies the active swarm in diagnostic checks; `/swarm diagnose` reports mismatches between this value and local plan state. |
 | `SWARM_LANG_BACKEND=legacy` | `test_runner` | Opts out of the dispatch language backend. Dispatch is the default. |
@@ -172,7 +173,7 @@ Sections marked `(strict)` reject unknown nested keys at config load time - a ty
 ## Architect prompt budget (characters and model tokens)
 
 The architect's built-in prompt composition is bounded by a published
-character ceiling, `ARCHITECT_PROMPT_BUDGET_CHARS` (161,500 chars in
+character ceiling, `ARCHITECT_PROMPT_BUDGET_CHARS` (164,000 chars in
 `src/agents/architect.ts`). Every supported feature combination — the default
 render, the work-complete council on or off, the advisory General Council
 (`council.general.enabled`) composed together with every documented opt-in
@@ -192,7 +193,7 @@ Two separate quantities are measured and recorded for every composition:
 - **Model tokens** — an estimate only (`estimateModelTokens`, roughly 4
   characters per token, rounded up). Real token usage varies by model and
   content; the estimate is reported next to the character count, never instead
-  of it, so a ~40K-token estimate at the 161K-char ceiling is understood as an
+  of it, so a ~41K-token estimate at the 164K-char ceiling is understood as an
   approximation of the system prompt's share of a 128K-token context window.
 
 Overflow policy (deterministic, guidance-preserving):

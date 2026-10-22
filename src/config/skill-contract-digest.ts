@@ -16,17 +16,30 @@ export const SKILL_CONTRACT_DIGEST_KEY = 'swarm-contract-digest';
 /**
  * Split a SKILL.md into its frontmatter block (fences included) and body.
  * A file without a well-formed opening/closing fence pair has no frontmatter.
+ * CRLF-tolerant (PR #3387 follow-up, FB-028): line endings are normalized
+ * before the fence scan, so a CRLF file returns real slices instead of an
+ * empty frontmatter — the previous LF-only scan silently disabled every
+ * bounded frontmatter surgery (stamp reads still worked because they
+ * normalize separately, but the reviser's version bumps no-op'd while the
+ * revision notes still claimed a bump). Returned slices are LF-normalized;
+ * every digest consumer normalizes the body anyway, so hashes are unchanged,
+ * and LF is the repo's checked-out policy (`.gitattributes` eol=lf).
  */
 export function splitSkillFrontmatter(content: string): {
 	frontmatter: string;
 	body: string;
 } {
-	if (!content.startsWith('---\n')) return { frontmatter: '', body: content };
-	const end = content.indexOf('\n---\n', 4);
-	if (end === -1) return { frontmatter: '', body: content };
+	const normalized = content.replace(/\r\n/g, '\n');
+	if (!normalized.startsWith('---\n')) {
+		return { frontmatter: '', body: normalized };
+	}
+	const end = normalized.indexOf('\n---\n', 4);
+	if (end === -1) {
+		return { frontmatter: '', body: normalized };
+	}
 	return {
-		frontmatter: content.slice(0, end + 5),
-		body: content.slice(end + 5),
+		frontmatter: normalized.slice(0, end + 5),
+		body: normalized.slice(end + 5),
 	};
 }
 

@@ -13,7 +13,7 @@ description: >
   this process.
 metadata:
   audience: swarm-plugin
-  swarm-contract-digest: "fd640bf3a2c6"
+  swarm-contract-digest: "e57e18e79789"
 ---
 
 # Swarm PR Feedback
@@ -197,15 +197,13 @@ including pre-existing changes from other branches or prior work.
 **The check:** Run `git status --porcelain` first. If output is non-empty, identify
 which files are PR-related vs pre-existing uncommitted changes.
 
-**The rule:** Stage files explicitly by path when the working tree contains files
-unrelated to the PR. For example:
+**The rule:** Never stage with `git add -A`, `git add .`, or any glob form —
+stage exact paths with the `--` separator, each already inside the
+PR changed set (the gate refuses every other form):
 
 ```bash
-git add src/foo.ts tests/foo.test.ts
+git add -- src/foo.ts tests/foo.test.ts
 ```
-
-Never use `git add -A` when the working tree has pre-existing changes from other
-branches or prior work sessions.
 
 ## Batch Collection (mandatory before any fix)
 
@@ -683,8 +681,10 @@ pre-checks and must not be folded into Stage A.
 ## Publishing And Communication
 
 After every ordered local gate passes on one unchanged content digest, create
-the reviewed commit with one standalone `git commit` command. Under Profile A,
-then call
+the reviewed commit with one standalone `git commit` command. A message with
+shell metacharacters (e.g. a `Co-Authored-By: X <...>` trailer) goes through
+`prepare_pr_feedback_commit_message` + `git commit -F <returned path>` (the
+file lives outside the repository). Under Profile A, then call
 `complete_pr_workflow` once with `mode: "PR_FEEDBACK"` and the immutable intake
 `pr_head_sha`. A `ready-to-publish` result arms publication but deliberately
 keeps the durable gate active and binds that post-commit HEAD to the current

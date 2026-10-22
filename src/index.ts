@@ -1206,8 +1206,8 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
  * Durable, bounded record of a bootstrap root redirect (#2679), written under
  * the OWNING project root's `.swarm/advisories/` (init-orphan-recovery
  * pattern) so the operator has a persistent, operator-understandable result
- * beyond the console/diagnose hint. Best-effort: the console hint already
- * fired, so any write failure is swallowed.
+ * beyond the `/swarm diagnose` advisory. Best-effort: that advisory is
+ * buffered before this write, so a write failure is swallowed.
  */
 function writeBootstrapRootRedirectRecord(
 	bootstrapRoot: string,
@@ -1226,7 +1226,7 @@ function writeBootstrapRootRedirectRecord(
 			}),
 		);
 	} catch {
-		// bounded best-effort record; the console/diagnose hint already fired
+		// bounded best-effort record; the /swarm diagnose advisory was buffered
 	}
 }
 
@@ -1241,16 +1241,16 @@ async function initializeOpenCodeSwarm(
 	// staleness warning, never a plain startup line). `packageJson.version`
 	// is already imported at module scope, so this is zero extra I/O and does
 	// not touch AGENTS.md invariant 1.
-	// STDERR, not stdout. This is the only unconditional line the plugin runtime
-	// emits, and the host may use stdout for structured protocol traffic — a
-	// startup banner there risks corrupting it. Every other always-emitted
-	// operator signal in this repo goes to stderr (`criticalWarn`,
-	// src/utils/logger.ts); `console.warn` is used directly rather than
-	// `criticalWarn` because this is not a warning and should not carry that
-	// label. #2236 needs it because the reporter could not identify which
-	// plugin version was actually loaded.
-	// biome-ignore lint/suspicious/noConsole: Startup version line — user must be able to identify the running plugin version to diagnose stale-cache issues (issue #2236)
-	console.warn(`[opencode-swarm] running v${packageJson.version}`);
+	// Issue #3405: an UNCONDITIONAL stderr banner corrupts the bubbletea TUI
+	// (the host renders plugin stderr as a full-width overlay — the #1249
+	// class), so the banner rides the debug-gated logger and keeps a raw
+	// stderr leg ONLY behind OPENCODE_SWARM_VERSION_BANNER=1 (headless/CLI
+	// stale-cache diagnosis and spike load detection; literal kept verbatim).
+	log(`[opencode-swarm] running v${packageJson.version}`);
+	if (process.env.OPENCODE_SWARM_VERSION_BANNER === '1') {
+		// biome-ignore lint/suspicious/noConsole: opt-in raw stderr version line (OPENCODE_SWARM_VERSION_BANNER=1) for headless/CLI stale-cache diagnosis (issues #2236, #3405)
+		console.warn(`[opencode-swarm] running v${packageJson.version}`);
+	}
 
 	// Clear deferred warnings at the very start of the session, BEFORE any
 	// init-path work that buffers advisories via advisoryWarn (config load,
@@ -1397,24 +1397,24 @@ async function initializeOpenCodeSwarm(
 	await Promise.all([configLoadP, snapshotP, gitExcludeP, projectContextP]);
 	const { config, loadedFromFile } = await configLoadP;
 	if (rootDecision.kind === 'redirect') {
-		// Actionable, bounded parent-root hint (AC1). `advisoryWarn` alone is
-		// buffered-only (warning-buffer), so the operator-visible leg is one
-		// console.warn line (quiet-gated, deferred fallback), matching the
-		// full-auto model-matching warning pattern.
+		// Actionable, bounded parent-root hint (AC1), delivered WITHOUT a raw
+		// stderr leg: a plugin console.warn renders as a full-width overlay
+		// over the bubbletea TUI (#1249 class), so the operator-visible
+		// channels are the double-buffered advisory surfaces — /swarm diagnose
+		// (addDeferredWarning) and the debug log (advisoryWarn) — plus the
+		// durable bootstrap record below (#3405).
 		const redirectHint = `[opencode-swarm] project-root ownership: "${ctx.directory}" is an ordinary subdirectory — runtime state, project config, and telemetry for this workspace are owned by the project root "${bootstrapRoot}". Open the project root (or add a .git/.opencode marker in "${ctx.directory}") to make this directory independent.`;
-		// UNCONDITIONAL (not quiet-gated): `quiet` defaults to true for routine
-		// startup noise, but a boot whose state silently lands under a different
-		// root is a containment signal the operator must see once per boot —
-		// same class as the unconditional startup version line.
-		// biome-ignore lint/suspicious/noConsole: containment redirect — operator must see which root owns .swarm state for this boot (issue #2679 AC1)
-		console.warn(redirectHint);
+		// UNCONDITIONAL (not quiet-gated): a boot whose state silently lands
+		// under a different root is a containment signal the operator must
+		// see once per boot in /swarm diagnose even with `quiet: true`.
 		addDeferredWarning(redirectHint);
 		advisoryWarn(redirectHint);
 		writeBootstrapRootRedirectRecord(bootstrapRoot, ctx.directory);
 	} else if (rootDecision.kind === 'fail-closed') {
+		// Same #3405 shape: buffered advisory channels only, no raw stderr
+		// leg. The hint tells the operator state writes are disabled for this
+		// boot (#2679) through /swarm diagnose and the debug log.
 		const failClosedHint = `[opencode-swarm] project-root ownership: cannot verify "${ctx.directory}" (${rootDecision.reason}) — runtime state is disabled for this session. Reopen the project from its verified root.`;
-		// biome-ignore lint/suspicious/noConsole: fail-closed ownership — operator must know state writes are disabled for this boot (issue #2679)
-		console.warn(failClosedHint);
 		addDeferredWarning(failClosedHint);
 		advisoryWarn(failClosedHint);
 	}
@@ -5795,8 +5795,9 @@ async function initializeOpenCodeSwarm(
 					// `DrainSummary`'s counters were computed and discarded here, which
 					// made `deferred` and `failed` — the two that say the drain did NOT
 					// finish its work — unobservable in production (issue #1821).
-					// `log` is gated on OPENCODE_SWARM_DEBUG and writes to stderr, never
-					// to a chat-visible stream (AGENTS.md invariant 10). `undefined`
+					// `log` is gated on OPENCODE_SWARM_DEBUG and writes to stdout
+					// (src/utils/logger.ts), never to a chat-visible stream
+					// (AGENTS.md invariant 10). `undefined`
 					// means a gate short-circuited before any drain ran, which is the
 					// overwhelmingly common case on the hot path and must stay silent.
 					if (summary) {

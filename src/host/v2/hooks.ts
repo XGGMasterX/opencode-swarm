@@ -53,8 +53,11 @@ const V2_HOOK_TIMEOUT_MS = 60_000;
  * stays untouched.
  */
 
-/** Mirrors `isTaskToolId`'s shape (dotted SDK form OR normalized base name). */
-function isV2SubagentToolId(toolName: string | null | undefined): boolean {
+/** Mirrors `isTaskToolId`'s shape (dotted SDK form OR normalized base name).
+ * Exported for the event pump's progress-event gating (issue #3401). */
+export function isV2SubagentToolId(
+	toolName: string | null | undefined,
+): boolean {
 	if (!toolName) return false;
 	if (toolName.includes('.')) {
 		return /^tool\.[^.:]+\.subagent$/i.test(toolName);
@@ -70,7 +73,11 @@ function isV2SubagentToolId(toolName: string | null | undefined): boolean {
  * keep them dead — every recognized form collapses to `task`.
  */
 
-function isPlainObject(value: unknown): value is Record<string, unknown> {
+/** Plain-object shape guard (arrays/instances rejected); exported for the
+ * event pump's progress-metadata validation (issue #3401 / PR #3402). */
+export function isPlainObject(
+	value: unknown,
+): value is Record<string, unknown> {
 	return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 

@@ -395,6 +395,11 @@ export const TOOL_METADATA = {
 			'prepare an exact file scope for one PR-feedback coder Task after immutable feedback verification settles',
 		agents: ['architect'],
 	},
+	prepare_pr_feedback_commit_message: {
+		description:
+			'author a PR_FEEDBACK commit message that cannot go inline (e.g. a Co-Authored-By trailer) into a file OUTSIDE the repository; returns the path for git commit -F',
+		agents: ['architect'],
+	},
 	test_runner: {
 		description: 'auto-detect and run tests',
 		agents: [
@@ -403,10 +408,12 @@ export const TOOL_METADATA = {
 			'critic_finding_validator',
 			'test_engineer',
 		],
-		prWorkflow: {
-			modes: ['PR_REVIEW'],
-			capability: 'validate',
-		},
+		// No prWorkflow capability (issue #3315 E1): test_runner executes test
+		// suites in the working directory, so in a bound PR_REVIEW checkout its
+		// outputs (snapshot files, fixtures) dirty the exact-PR-head tree the
+		// workflow requires clean. The gate refuses it at admission with a
+		// targeted message; validation runs through dispatch_lanes_async lanes
+		// or PR_FEEDBACK Stage A.
 	},
 	test_impact: {
 		description:

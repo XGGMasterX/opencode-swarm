@@ -712,6 +712,55 @@ export const RETENTION_REGISTRY: readonly RetentionRow[] = [
 		},
 	},
 	{
+		id: 'pr-feedback-commit-message-files',
+		category: 2,
+		pathGrammar:
+			'<os.tmpdir()>/swarm-pr-feedback-commit-msg/{sanitized-sessionID}-{sha256(message)[:16]}.txt',
+		canonicalRoot: 'outside-swarm',
+		writerModules: ['src/tools/prepare-pr-feedback-commit-message.ts'],
+		writerCitations: [
+			'src/tools/prepare-pr-feedback-commit-message.ts:209 atomicWriteFileAnyRoot — canonical atomic write (temp+fsync+rename, mode 0600)',
+			'src/tools/prepare-pr-feedback-commit-message.ts:177 mkdirSync — dedicated temp subdirectory (recursive)',
+			'src/tools/prepare-pr-feedback-commit-message.ts:98 rmSync — pruneStaleMessageFiles TTL reaper',
+		],
+		readerCitations: [
+			'no plugin reader — the authored path is returned to the caller (:220-225) and consumed by `git commit -F` outside the plugin',
+		],
+		schemaVersion: 'plain-text commit message (no schema)',
+		stateClass: 'operational',
+		privacyClass: 'content',
+		writeLimits: {
+			bound: 'MAX_COMMIT_MESSAGE_CHARS 8192 per file (:42,:53-55; whitespace-only and NUL refused); one file per (sanitized sessionID, sha256(message)[:16]) key (:68-81); pruneStaleMessageFiles age-prunes every .txt in the directory at MESSAGE_FILE_TTL_MS 24 h on every authoring call (:44,:88-107)',
+			scope: 'per-key',
+			keyspaceBound:
+				'FINITE BY REAPER: the message-digest key domain has no closed enumeration, but pruneStaleMessageFiles (src/tools/prepare-pr-feedback-commit-message.ts:88-107) walks the whole dedicated directory on EVERY authoring call and removes every file older than the 24 h TTL, so the keyspace cannot outgrow one 24 h window of authored messages.',
+			citation:
+				'src/tools/prepare-pr-feedback-commit-message.ts:42-44,63-81,88-107,209-211',
+		},
+		readBound: {
+			pattern: 'write-only',
+			bound: 'never read back by the plugin; the content is written once atomically and handed off by path',
+			sync: false,
+			citation:
+				'src/tools/prepare-pr-feedback-commit-message.ts:209-211 (sole write; git reads the file as the -F argument, outside the plugin)',
+		},
+		lockModel:
+			'none — deterministic per-key filename + atomic write; concurrent authoring of the same message converges to identical bytes',
+		crashBehavior:
+			'a crash between temp and rename leaves no destination; the next authoring call rewrites the same deterministic path',
+		closePolicy:
+			'untouched — OS temp directory, outside /swarm close scope; the 24 h TTL prune owns the reap',
+		resetPolicy: 'not reset — OS temp scratch; stale files self-expire via the TTL prune',
+		legacyCompatibility: 'n/a',
+		healthSignal: 'n/a — authoring failures return structured refusals to the caller',
+		owner: '#3315',
+		disposition: {
+			kind: 'not-a-defect',
+			proof:
+				'Ephemeral authored commit-message files live in a dedicated OS-temp subdirectory OUTSIDE every repository (prepare-pr-feedback-commit-message.ts:63-81); the filename key is (sanitized sessionID, sha256(message)[:16]) and pruneStaleMessageFiles (:88-107) reaps files older than MESSAGE_FILE_TTL_MS=24 h on every authoring call, so there is no unbounded growth axis; writes are atomic with mode 0600 (:209-211) and a TMPDIR resolving inside the repository is refused (:169-175).',
+		},
+	},
+	{
 		id: 'lane-results-outputs',
 		category: 2,
 		pathGrammar: '.swarm/lane-results/{batchDigest}/{laneDigest}/{outputDigest}.json + candidates.jsonl',
@@ -723,7 +772,7 @@ export const RETENTION_REGISTRY: readonly RetentionRow[] = [
 		],
 		readerCitations: [
 			'src/background/lane-output-store.ts:191 readLaneOutput — single-file by ref with digest/bytes validation, sync',
-			'candidates parsed by consumers (parseCandidates via pr-workflow-gate.ts:19)',
+			'candidates parsed by consumers (parseCandidates via pr-workflow-gate.ts:20)',
 		],
 		schemaVersion: 'LANE_OUTPUT_SCHEMA_VERSION 1 (lane-output-store.ts:16); candidates carry row_format_version/record_version per record',
 		stateClass: 'governed-content',
@@ -947,11 +996,11 @@ export const RETENTION_REGISTRY: readonly RetentionRow[] = [
 		canonicalRoot: 'project-swarm',
 		writerModules: ['src/background/workspace-snapshot.ts'],
 		writerCitations: [
-			'src/background/workspace-snapshot.ts:1934 captureWorkspaceSnapshotAsync — async twin persist path: after a successful capture the content digest is written to the .swarm-contained marker (:1983-1994)',
-			'src/background/workspace-snapshot.ts:1986 atomicWriteSwarmFile — validateSwarmPath(SNAPSHOT_DIGEST_MARKER_FILENAME)-contained atomic temp+rename; advisory by contract, a containment rejection or write failure never fails the capture (:1990-1993)',
+			'src/background/workspace-snapshot.ts:2116 captureWorkspaceSnapshotAsync — async twin persist path: after a successful capture the content digest is written to the .swarm-contained marker (:2165-2176)',
+			'src/background/workspace-snapshot.ts:2168 atomicWriteSwarmFile — validateSwarmPath(SNAPSHOT_DIGEST_MARKER_FILENAME)-contained atomic temp+rename; advisory by contract, a containment rejection or write failure never fails the capture (:2168-2171)',
 		],
 		readerCitations: [
-			'src/background/workspace-snapshot.ts:2008 shouldSkipSnapshot — single readFileSync of the marker, trim + exact compare; missing/malformed marker or candidate digest fails open to false (a skip can never suppress a capture)',
+			'src/background/workspace-snapshot.ts:2190 shouldSkipSnapshot — single readFileSync of the marker, trim + exact compare; missing/malformed marker or candidate digest fails open to false (a skip can never suppress a capture)',
 		],
 		schemaVersion: 'none — single sha256 hex line (64 lowercase hex chars + trailing newline)',
 		stateClass: 'derived-rebuildable',
@@ -959,9 +1008,9 @@ export const RETENTION_REGISTRY: readonly RetentionRow[] = [
 		writeLimits: {
 			bound: 'ONE fixed-shape advisory marker per project root — 65 bytes (64-char sha256 hex + newline), atomically overwritten per capture; the write is skipped entirely whenever the digest is unchanged, so footprint is constant regardless of capture frequency',
 			scope: 'global',
-			citation: 'src/background/workspace-snapshot.ts:1967-1978',
+			citation: 'src/background/workspace-snapshot.ts:2106-2117',
 		},
-		readBound: { pattern: 'line-bounded', bound: 'single 65-byte marker read once per capture', sync: true, citation: 'src/background/workspace-snapshot.ts:1992-2005' },
+		readBound: { pattern: 'line-bounded', bound: 'single 65-byte marker read once per capture', sync: true, citation: 'src/background/workspace-snapshot.ts:2190-2204' },
 		lockModel: 'none — advisory marker; atomic temp+rename makes concurrent captures last-writer-wins and a raced stale value costs one redundant capture at worst',
 		crashBehavior: 'atomic temp+rename; a torn or lost marker fails open (shouldSkipSnapshot false) and the next capture rewrites it — the marker is advisory, never authoritative state',
 		closePolicy: 'archived then cleaned by /swarm close — the marker is a member of both ARCHIVE_ARTIFACTS and ACTIVE_STATE_TO_CLEAN (close.ts), so close preserves a copy in the archive and removes the live file',
@@ -974,7 +1023,7 @@ export const RETENTION_REGISTRY: readonly RetentionRow[] = [
 		owner: '#2472',
 		disposition: {
 			kind: 'not-a-defect',
-			proof: 'Single fixed-shape 65-byte advisory marker, atomically overwritten per capture and skipped entirely when the content digest is unchanged; a missing, torn, or stale marker costs exactly one redundant capture because shouldSkipSnapshot fails open — constant footprint, no accumulation vector (src/background/workspace-snapshot.ts:1967-1978,1992-2005).',
+			proof: 'Single fixed-shape 65-byte advisory marker, atomically overwritten per capture and skipped entirely when the content digest is unchanged; a missing, torn, or stale marker costs exactly one redundant capture because shouldSkipSnapshot fails open — constant footprint, no accumulation vector (src/background/workspace-snapshot.ts:2165-2176,2190-2204).',
 		},
 	},
 	{
@@ -1037,7 +1086,7 @@ export const RETENTION_REGISTRY: readonly RetentionRow[] = [
 			'src/tools/write-pr-review-trigger-eval.ts createTriggerReceipt — trigger-eval receipt atomic write (temp+link; refuses overwrite on EEXIST)',
 			'src/tools/pr-review-submission.ts executePrReviewSubmission writeFileSync — a run-scoped submission-payload.json provenance copy, overwritten per attempt (validateSwarmPath-contained, run_id-charset-bounded path; direct write, not temp+rename)',
 			'src/tools/export-pr-review-partial-results.ts executeExportPrReviewPartialResults — a run-scoped post-abort-export.json partial-salvage artifact (issue #3097) written through the canonical atomicWriteSwarmFile (fsync + bounded rename retry + cache invalidation), byte-capped (findings cap + 24 MiB margin; typed artifact-too-large refusal beyond), idempotent re-export; the gate re-check runs immediately before the write',
-			'src/hooks/pr-workflow-gate.ts:11777 tryCreatePrReviewRunReservation — create-only (wx) run-reservation.json owned by the reserving session',
+			'src/hooks/pr-workflow-gate.ts:11932 tryCreatePrReviewRunReservation — create-only (wx) run-reservation.json owned by the reserving session',
 			'src/pr-review/completion.ts:1441 — coverage-disclosure.json atomic write via coverageDisclosureRelativePath (:1097), ≤4 KiB',
 			'src/pr-review/verdict-settlement.ts persistVerdictSettlementReceipt — per-phase verdict-settlement.{reviewer,critic}.json atomic write via writeAtomicJson, ≤64 KiB (writer-side byte guard mirrors the bounded reader), ≤128 items, rename-overwritten on re-admission (issue #3101)',
 			'src/background/pr-feedback-event-queue.ts:455 writeQueueRecord — feedback-handoff lock/content writes',
@@ -4665,7 +4714,7 @@ export const EXEMPT_WRITER_MODULES: Readonly<Record<string, string>> = Object.fr
 	'src/retention/jsonl-cap.ts': 'shared retention plumbing (appendCappedJsonl/readTailJsonl, issue #2483 §1) — callers own the streams; their rows carry the cap citations',
 	'src/evaluation/retrieval-quality.ts': 'temporary bounded evaluation artifacts under os.tmpdir — always removed in finally and never durable project state',
 	'src/epic/residue-commit.ts': 'Epic residue-commit --pathspec-from-file input: one transient file under the git dir (git rev-parse --git-path), removed in finally — never durable project state, no reader',
-	'src/index.ts': 'bootstrap-root redirect advisory record (#2679): one bounded best-effort .swarm/advisories/bootstrap-root-redirect.json per redirected boot, mirrored to console + /swarm diagnose — no durable stream, no reader, never enumerated',
+	'src/index.ts': 'bootstrap-root redirect advisory record (#2679): one bounded best-effort .swarm/advisories/bootstrap-root-redirect.json per redirected boot, surfaced through the /swarm diagnose advisory buffer (the raw console leg was removed in issue #3405) — no durable stream, no reader, never enumerated',
 });
 
 /** Sequence window for fix-in-issue dispositions (issue #2036 amendment clause). */

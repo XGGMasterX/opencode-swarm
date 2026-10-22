@@ -119,7 +119,11 @@ describe('#3029 F-004(b) — pump identity-seeding call site contract', () => {
 		// The call must precede the mapping (identity is seeded for unmapped
 		// identity-bearing envelopes too).
 		const seedAt = source.indexOf('seedSessionIdentityFromEnvelope(envelope);');
-		const mapAt = source.indexOf('const mapped = mapV2EventToV1(envelope);');
+		// #3401: the map call now carries the pump's tool-name lookup; the
+		// ordering pin (seed precedes map) is preserved against the new shape.
+		const mapAt = source.indexOf(
+			'const mapped = mapV2EventToV1(envelope, lookupToolNameForDispatch);',
+		);
 		expect(seedAt).toBeGreaterThan(-1);
 		expect(mapAt).toBeGreaterThan(seedAt);
 	});

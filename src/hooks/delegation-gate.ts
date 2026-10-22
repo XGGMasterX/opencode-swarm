@@ -4020,6 +4020,18 @@ export function createDelegationGateHook(
 				// Reviewer/test-engineer tasks do not own coder scope, but their
 				// route tuple still needs the host-provided child identity.
 				bindRouteChildSession();
+				// #3401 (PR #3402 review PRR-002): the v2 activation path makes
+				// exactly one claim attempt per dispatch (the host emits one
+				// child-identity progress event), so a miss here strands the
+				// dispatch's pending_child generation with no later retry. Log
+				// the dispatch identity (debug-gated) so a recurrence of the
+				// #3401 wedge is distinguishable from this designed non-coder
+				// silent path.
+				logger.log('scope claim: no pending generation for dispatch', {
+					parentSessionId: input.parentSessionID,
+					childSessionId: input.childSessionID,
+					dispatchCallId: input.callID,
+				});
 				return;
 			}
 			throw new Error(`${result.code}: ${result.message}`);

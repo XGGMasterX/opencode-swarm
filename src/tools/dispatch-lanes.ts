@@ -2056,7 +2056,12 @@ export async function executeDispatchLanesAsync(
 				) {
 					if (
 						parsed.data.lanes.length !== 1 ||
-						parsed.data.max_concurrent !== 1
+						// Issue #3315 E7: an omitted max_concurrent defaults to the
+						// lane count (PR_REVIEW parity, #2835). lanes.length === 1 is
+						// separately enforced, so the omitted value is unambiguous;
+						// only an explicit non-1 value (or a multi-lane dispatch)
+						// rejects below.
+						(parsed.data.max_concurrent ?? parsed.data.lanes.length) !== 1
 					) {
 						throw new Error(
 							'BLOCKED: each ordered PR_FEEDBACK gate requires exactly one lane and max_concurrent: 1',

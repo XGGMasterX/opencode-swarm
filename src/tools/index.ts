@@ -234,6 +234,10 @@ export {
 	pr_review_submission,
 } from './pr-review-submission';
 export {
+	executePreparePrFeedbackCommitMessage,
+	prepare_pr_feedback_commit_message,
+} from './prepare-pr-feedback-commit-message';
+export {
 	executePreparePrWorkflowCheckout,
 	prepare_pr_workflow_checkout,
 } from './prepare-pr-workflow-checkout';

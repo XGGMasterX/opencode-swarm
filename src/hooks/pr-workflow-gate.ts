@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import type { BigIntStats, Dirent } from 'node:fs';
+import { realpathSync } from 'node:fs';
 import * as fsp from 'node:fs/promises';
 import * as path from 'node:path';
 import type { SessionStatus } from '@opencode-ai/sdk';
@@ -62,6 +63,7 @@ import {
 	readPrReviewTriggerReceiptForGate,
 } from '../background/pr-review-trigger-receipt-reader.js';
 import {
+	fastForwardToRefAsync,
 	type RevisionDigestResult,
 	resolveCommitCountSince,
 	resolveCommitCountSinceAsync,
@@ -73,13 +75,16 @@ import {
 	resolveCurrentUpstreamRemoteRef,
 	resolveExactRemoteBranchHead,
 	resolveExactRemoteBranchHeadAsync,
+	resolveIsAncestorAsync,
 	resolveIsExactSingleChildCommit,
 	resolveIsExactSingleChildCommitAsync,
 	resolveIsWorkingTreeClean,
 	resolveIsWorkingTreeCleanAsync,
+	resolveLocalRefHeadAsync,
 	resolvePrFeedbackTrackingCandidatesAsync,
 	resolvePrReviewDiffStats,
 	resolvePrReviewDiffStatsAsync,
+	resolvePrWorkflowChangedPathSetAsync,
 	resolvePrWorkflowRevisionDigest,
 	resolvePrWorkflowRevisionDigestDetailed,
 	resolvePrWorkflowRevisionDigestDetailedAsync,
@@ -87,6 +92,8 @@ import {
 	resolveRemoteRefsContainingHeadAsync,
 	resolveRemoteUrlIdentity,
 	resolveRemoteUrlIdentityAsync,
+	resolveRepoTopLevelAsync,
+	resolveWorkingTreeDirtyPathsAsync,
 	switchPrFeedbackTrackingCandidateAsync,
 } from '../background/workspace-snapshot.js';
 import { WRITE_TOOL_NAMES } from '../config/constants.js';
@@ -5293,72 +5300,196 @@ async function bindPrWorkflowHeadWhileLocked(
  *   6. The immutable feedback inventory is preserved (item ownership
  *      continuity); only ancestry-bound receipts are invalidated.
  */
+/**
+ * Issue #3315 D1: fast-forward the local branch to the fetched bound tracking
+ * ref when — and only when — a POSITIVE fast-forward opportunity exists: the
+ * tracking ref resolves to exactly the requested new head AND the current HEAD
+ * is verified as its ancestor. A missing/mismatched ref falls through to the
+ * caller's existing assertions; an ancestry probe that cannot be verified
+ * (timeout) refuses with an explicit unverifiable message instead of
+ * misreporting divergence (FB-11/F-R13); a genuine non-descendant refuses
+ * with the fast-forward refusal. HEAD only ever moves via `git merge
+ * --ff-only` — never a merge commit, rebase, or reset — and every probe is
+ * fail-soft so fixture repositories without a real git directory are
+ * unaffected.
+ */
+async function maybeFastForwardRebindHead(
+	directory: string,
+	normalizedHead: string,
+): Promise<void> {
+	const tracking = await _test_exports
+		.resolveCurrentUpstreamPushTargetAsync(directory)
+		.catch(() => null);
+	if (!tracking?.remoteTrackingRef) return;
+	const trackingHead = await _test_exports.resolveLocalRefHeadAsync(
+		directory,
+		tracking.remoteTrackingRef,
+	);
+	// FB-8/PRR-009: the tracking head is lowercased by the resolver, so the
+	// requested head must be lowercased too — the schema accepts mixed-case
+	// hex, and a case-only mismatch silently skipped the ff remedy.
+	if (!trackingHead || trackingHead !== normalizedHead.toLowerCase()) return;
+	const currentHead = (
+		await _test_exports.resolveCurrentGitHeadAsync(directory)
+	)
+		?.trim()
+		.toLowerCase();
+	if (!currentHead) return;
+	if (currentHead === normalizedHead.toLowerCase()) return;
+	const ancestry = await _test_exports.resolveIsAncestorAsync(
+		directory,
+		currentHead,
+		normalizedHead,
+	);
+	if (ancestry === null) {
+		throw new Error(
+			`BLOCKED: PR_FEEDBACK rebind fast-forward could not verify whether "${normalizedHead}" is a descendant of the current HEAD "${currentHead}" (the ancestry probe timed out or its output was truncated); nothing moved — retry the rebind`,
+		);
+	}
+	if (!ancestry) {
+		throw new Error(
+			`BLOCKED: PR_FEEDBACK rebind fast-forward refused: the bound tracking ref ${tracking.remoteTrackingRef} points at "${normalizedHead}", which is not a descendant of the current HEAD "${currentHead}"; resolve the divergence manually (push the repair, then rebind) — the gate never merges or rebases`,
+		);
+	}
+	if (
+		(await _test_exports.resolveIsWorkingTreeCleanAsync(directory)) !== true
+	) {
+		throw new Error(
+			'BLOCKED: PR_FEEDBACK rebind fast-forward requires a clean index and working tree; clean the tree first, then rebind',
+		);
+	}
+	const moved = await _test_exports.fastForwardToRefAsync(
+		directory,
+		tracking.remoteTrackingRef,
+	);
+	if (!moved) {
+		throw new Error(
+			`BLOCKED: PR_FEEDBACK rebind fast-forward to ${tracking.remoteTrackingRef} failed or timed out; if git left an index.lock or a partially updated tree, remove the lock / restore the tree manually before retrying — otherwise a plain retry of the rebind completes it`,
+		);
+	}
+}
+
 export async function rebindPrFeedbackHead(
 	directory: string,
 	sessionID: string,
 	prHeadSha: string,
 ): Promise<PrWorkflowGateState> {
-	const state = await requireBoundState(directory, sessionID, 'PR_FEEDBACK');
-	const normalizedHead = normalizePrHeadSha(prHeadSha);
-	if (state.prFeedbackReadyToPublish) {
-		throw new Error(
-			'BLOCKED: PR_FEEDBACK rebind is refused while publication is armed; complete the workflow (or push the bound commit) before rebinding.',
+	// Issue #3315 D1: the whole sequence — preconditions, the ff-only HEAD
+	// move, and the CAS state write — runs under the checkout mutation lock in
+	// bind's lock order, so nothing can interpose between the checks and the
+	// move (the previous shape ran every check unlocked and only wrapped the
+	// final write).
+	return withPrWorkflowCheckoutMutationLock(directory, async () => {
+		const state = await requireBoundState(directory, sessionID, 'PR_FEEDBACK');
+		// FB-8/PRR-009: the schema accepts mixed-case hex; lowercase once so
+		// every downstream comparison (mover, asserts, CAS payload) agrees.
+		const normalizedHead = normalizePrHeadSha(prHeadSha).toLowerCase();
+		if (state.prFeedbackReadyToPublish) {
+			throw new Error(
+				'BLOCKED: PR_FEEDBACK rebind is refused while publication is armed; complete the workflow (or push the bound commit) before rebinding.',
+			);
+		}
+		// Issue #2511: an unreadable store must fail closed — the rebind guard
+		// cannot verify in-flight lanes, so rebind is refused until it is readable.
+		const rebindRead = readDelegationsDetailed(directory);
+		if (rebindRead.status === 'uncertain') {
+			throw new Error(
+				`BLOCKED: PR_FEEDBACK rebind refused while the delegation store is unreadable after ${rebindRead.attempts} attempts (${rebindRead.reason}); in-flight lanes are UNKNOWN. Restore the store before rebinding.`,
+			);
+		}
+		const openLanes = rebindRead.records.filter(
+			(record) =>
+				record.parentSessionId === state.sessionID &&
+				record.mode?.startsWith('swarm-pr-') &&
+				(record.status === 'pending' || record.status === 'running'),
 		);
-	}
-	// Issue #2511: an unreadable store must fail closed — the rebind guard
-	// cannot verify in-flight lanes, so rebind is refused until it is readable.
-	const rebindRead = readDelegationsDetailed(directory);
-	if (rebindRead.status === 'uncertain') {
-		throw new Error(
-			`BLOCKED: PR_FEEDBACK rebind refused while the delegation store is unreadable after ${rebindRead.attempts} attempts (${rebindRead.reason}); in-flight lanes are UNKNOWN. Restore the store before rebinding.`,
-		);
-	}
-	const openLanes = rebindRead.records.filter(
-		(record) =>
-			record.parentSessionId === state.sessionID &&
-			record.mode?.startsWith('swarm-pr-') &&
-			(record.status === 'pending' || record.status === 'running'),
-	);
-	if (openLanes.length > 0) {
-		throw new Error(
-			`BLOCKED: PR_FEEDBACK rebind refused while ${openLanes.length} PR workflow lane(s) are still in flight; collect their results first.`,
-		);
-	}
-	if (normalizedHead === state.prHeadSha) {
-		throw new Error(
-			`BLOCKED: PR_FEEDBACK rebind to the current intake head "${normalizedHead}" is a no-op; a rebind must move to a genuinely new verified PR head after merge/rebase repair.`,
-		);
-	}
-	await assertCurrentCheckoutHead(directory, normalizedHead, state.mode);
-	await assertPrFeedbackTrackingCheckout(directory, normalizedHead);
-	const nextState: PrWorkflowGateState = {
-		...state,
-		prHeadSha: normalizedHead,
-		// Invalidate every ancestry-bound receipt: the entire mechanical ladder
-		// (Stage A → verification → ordered gates) must re-run on the new
-		// ancestry. The immutable inventory and retired item ownership survive
-		// so item-set continuity is preserved across the repair.
-		prFeedbackStageA: undefined,
-		prFeedbackVerifications: undefined,
-		prFeedbackGateBatches: undefined,
-		prFeedbackRebindCount: (state.prFeedbackRebindCount ?? 0) + 1,
-		updatedAt: isoNow(),
-	};
-	try {
-		appendCoreEventSync(directory, {
-			type: 'pr_feedback_rebound',
-			timestamp: isoNow(),
-			sessionID: state.sessionID,
-			previousPrHeadSha: state.prHeadSha,
+		if (openLanes.length > 0) {
+			throw new Error(
+				`BLOCKED: PR_FEEDBACK rebind refused while ${openLanes.length} PR workflow lane(s) are still in flight; collect their results first.`,
+			);
+		}
+		if (normalizedHead === state.prHeadSha) {
+			throw new Error(
+				`BLOCKED: PR_FEEDBACK rebind to the current intake head "${normalizedHead}" is a no-op; a rebind must move to a genuinely new verified PR head after merge/rebase repair.`,
+			);
+		}
+		// Issue #3315 D1: after the remote advances, nothing else the gate admits
+		// can move HEAD to the fetched tracking head — move it here (ff-only,
+		// positive-opportunity-gated) before the checkout assertions run.
+		// FB-6/PRR-006: the two post-move assertions are INSIDE the compensation
+		// try — a probe failure after a successful ff leaves HEAD moved, and the
+		// operator must be told so (the compensation message covers it; a plain
+		// retry heals because the mover no-ops once HEAD equals the requested
+		// head).
+		try {
+			await maybeFastForwardRebindHead(directory, normalizedHead);
+			await assertCurrentCheckoutHead(directory, normalizedHead, state.mode);
+			await assertPrFeedbackTrackingCheckout(directory, normalizedHead);
+		} catch (error) {
+			const currentHead = (
+				await _test_exports
+					.resolveCurrentGitHeadAsync(directory)
+					.catch(() => null)
+			)
+				?.trim()
+				.toLowerCase();
+			if (
+				currentHead !== undefined &&
+				currentHead !== null &&
+				currentHead !== (state.prHeadSha ?? '').toLowerCase() &&
+				error instanceof Error
+			) {
+				throw new Error(
+					`BLOCKED: ${error.message} NOTE: the checkout HEAD is "${currentHead}" while the bound intake head is still "${state.prHeadSha}" — the fast-forward already moved HEAD; a plain retry of the same rebind completes it`,
+					{ cause: error },
+				);
+			}
+			throw error;
+		}
+		const nextState: PrWorkflowGateState = {
+			...state,
 			prHeadSha: normalizedHead,
-			rebindCount: nextState.prFeedbackRebindCount,
-		});
-	} catch {
-		// Non-fatal audit trail.
-	}
-	return withSessionStateMutation(directory, state.sessionID, async () =>
-		writeStateWhileLocked(directory, nextState),
-	);
+			// Invalidate every ancestry-bound receipt: the entire mechanical ladder
+			// (Stage A → verification → ordered gates) must re-run on the new
+			// ancestry. The immutable inventory and retired item ownership survive
+			// so item-set continuity is preserved across the repair.
+			prFeedbackStageA: undefined,
+			prFeedbackVerifications: undefined,
+			prFeedbackGateBatches: undefined,
+			prFeedbackRebindCount: (state.prFeedbackRebindCount ?? 0) + 1,
+			updatedAt: isoNow(),
+		};
+		try {
+			appendCoreEventSync(directory, {
+				type: 'pr_feedback_rebound',
+				timestamp: isoNow(),
+				sessionID: state.sessionID,
+				previousPrHeadSha: state.prHeadSha,
+				prHeadSha: normalizedHead,
+				rebindCount: nextState.prFeedbackRebindCount,
+			});
+		} catch {
+			// Non-fatal audit trail.
+		}
+		try {
+			return await withSessionStateMutation(
+				directory,
+				state.sessionID,
+				async () => writeStateWhileLocked(directory, nextState),
+			);
+		} catch (error) {
+			// Issue #3315 D1 compensation: HEAD may already sit at the new head
+			// while the rebind state failed to persist. Surface the split state
+			// honestly — a plain retry of the same rebind heals it (the mover
+			// no-ops once HEAD equals the tracking head, then the write retries).
+			throw new Error(
+				`BLOCKED: PR_FEEDBACK rebind moved the checkout toward "${normalizedHead}" but could not persist the rebind state (${
+					error instanceof Error ? error.message : String(error)
+				}); HEAD is already at the new head — retry the same rebind to complete it`,
+				{ cause: error },
+			);
+		}
+	});
 }
 
 /** Bind an active PR_REVIEW workflow to one immutable merge-base scope. */
@@ -5459,8 +5590,32 @@ export async function assertPrReviewCleanCheckout(
 	if (
 		(await _test_exports.resolveIsWorkingTreeCleanAsync(directory)) !== true
 	) {
+		// Issue #3315 E1/AC22: name the offending paths (first N plus a count
+		// of the rest) from the same porcelain enumeration that produced the
+		// dirty verdict — sibling seam, so the cleanliness semantics are
+		// unchanged and an unreadable enumeration merely omits the detail.
+		// FB-17/PRR-021: `-z` paths are byte-transparent — control characters
+		// and ANSI escapes are escaped before the join so the refusal stays a
+		// single-line, gate-authored message.
+		const dirtyPaths =
+			await _test_exports.resolveWorkingTreeDirtyPathsAsync(directory);
+		const sanitizePath = (value: string): string =>
+			value.replace(
+				/[\p{Cc}]/gu,
+				(ch) => `\\u${ch.charCodeAt(0).toString(16).padStart(4, '0')}`,
+			);
+		const shown = dirtyPaths
+			? dirtyPaths
+					.slice(0, PR_WORKFLOW_DIRTY_PATH_DISCLOSURE_LIMIT)
+					.map(sanitizePath)
+			: [];
+		const total = dirtyPaths ? dirtyPaths.length : 0;
+		const detail =
+			shown.length > 0
+				? ` Dirty paths (first ${shown.length} of ${total}): ${shown.join(', ')}.`
+				: '';
 		throw new Error(
-			`BLOCKED: ${mode} requires a clean index and working tree at the exact PR head`,
+			`BLOCKED: ${mode} requires a clean index and working tree at the exact PR head.${detail}`,
 		);
 	}
 }
@@ -13167,11 +13322,22 @@ export async function enforcePrWorkflowToolBefore(
 		/\bgit\b(?:(?![;&|]).){0,200}\bcommit\b/i.test(command);
 	const isStandaloneGitCommitShell =
 		containsGitCommitShell && isSafeStandaloneGitCommit(command);
+	const isStandaloneGitAddShell =
+		isShellCommandRequiringVerification && isSafeStandaloneGitAdd(command);
 	const isPublicationShell =
 		isShellCommandRequiringVerification &&
 		(/\bgit\b(?:(?![;&|]).){0,200}\bpush\b/i.test(command) ||
 			/\bgh\s+(?:api|pr|issue|run)\b/i.test(command));
-	const isPublicationTool = !isInternalWorkflowTool && isRemoteMutationTool;
+	// Issue #3315 D2: a trusted-observe capability outranks the publication NAME
+	// heuristic in every state. `pr_workflow_status`, `git_blame` and `gitingest`
+	// carry observe metadata, and the gate's own BLOCKED text prescribes
+	// `pr_workflow_status` for exactly these unarmed states. Validate-capability
+	// tools are NEVER exempted (they execute); `isNamedReadOnlyTool` is not the
+	// key for the same reason.
+	const isTrustedObserveTool =
+		trustedCapability === 'observe' && isTrustedWorkflowTool;
+	const isPublicationTool =
+		!isInternalWorkflowTool && !isTrustedObserveTool && isRemoteMutationTool;
 	const isCoderTask =
 		isDirectAgentTask &&
 		requestedRoles.length > 0 &&
@@ -13185,6 +13351,31 @@ export async function enforcePrWorkflowToolBefore(
 			? ` ${describeBlockedPrReviewShellCommand(command, shellPermissionEnvelope)}`
 			: '';
 	if (state.mode === 'PR_REVIEW') {
+		// Issue #3315 E1 (FB-16/PRR-020 scoped to the BOUND state per AC21):
+		// test_runner executes test suites in the working directory, so inside
+		// a bound PR_REVIEW checkout it would dirty the exact-PR-head tree with
+		// untracked outputs (snapshot files, fixtures) and wedge
+		// dispatch/completion on the clean-tree checks. Refuse it at admission;
+		// validation runs through dispatch_lanes_async lanes or PR_FEEDBACK
+		// Stage A, which executes the repository's own scripts. (The refusal
+		// fires for lane children too: their calls resolve to the gate-owning
+		// session here. FB-20/PRR-010: lane tool grants are set by the agent
+		// config allowlist, not by a lane overlay — the gate is the refusing
+		// layer.)
+		if (normalizedTool === 'test_runner' && state.prHeadSha) {
+			throw new Error(
+				'BLOCKED: PR_REVIEW test_runner would execute inside the bound checkout at the exact PR head and its outputs (snapshot files, fixtures) would dirty the tree; run validation through dispatch_lanes_async lanes or PR_FEEDBACK Stage A',
+			);
+		}
+		// Issue #3315 E3: the two recovery swarm commands stay reachable in
+		// PR_REVIEW — `diagnose` is read-only diagnostics and `guardrail reset`
+		// clears session-scoped circuit state, never workflow state.
+		if (
+			normalizedTool === 'swarm_command' &&
+			isPrWorkflowRecoverySwarmCommandArgs(args)
+		) {
+			return;
+		}
 		let hasAuthorizedDirectReentry = false;
 		if (
 			isDirectAgentTask &&
@@ -13230,6 +13421,14 @@ export async function enforcePrWorkflowToolBefore(
 		throw new Error(
 			'BLOCKED: PR_FEEDBACK reviewer, test, critic, explorer, and unknown agent lanes require structured dispatch_lanes_async provenance',
 		);
+	}
+	// Issue #3315 E3: same two recovery commands as PR_REVIEW (see the
+	// PR_REVIEW branch for the rationale).
+	if (
+		normalizedTool === 'swarm_command' &&
+		isPrWorkflowRecoverySwarmCommandArgs(args)
+	) {
+		return;
 	}
 	if (
 		!isInternalWorkflowTool &&
@@ -13339,8 +13538,81 @@ export async function enforcePrWorkflowToolBefore(
 	}
 	if (!state.prHeadSha && isCanonicalReviewCheckout) return;
 	if (isStandaloneGitCommitShell) {
+		// Issue #3315 D8/AC25: `git commit -F <path>` is admitted by the
+		// classifier only when the message file resolves OUTSIDE the
+		// repository — an in-repo message file is an untracked file that
+		// breaks the clean-tree arming check. Author the file with the
+		// prepare_pr_feedback_commit_message controller tool. Containment is
+		// measured against the git TOPLEVEL (FB-13/F-R50: the clean check is
+		// repo-wide even when the gate directory is a subdirectory of the
+		// repository); an unresolvable toplevel falls back to the gate
+		// directory (fail-closed for the in-repo direction is preserved
+		// because the lexical check still runs on `directory`).
+		const messageFile = extractStandaloneGitCommitMessageFile(command);
+		if (messageFile !== null) {
+			const cwdBase = resolveStandaloneGitCommandCwd(command, directory);
+			const resolvedFile = path.resolve(cwdBase, messageFile);
+			const containmentRoot =
+				await _test_exports.resolveRepoTopLevelAsync(directory);
+			if (
+				isPathInsideRepository(resolvedFile, directory) ||
+				(containmentRoot !== null &&
+					isPathInsideRepository(resolvedFile, containmentRoot))
+			) {
+				throw new Error(
+					`BLOCKED: PR_FEEDBACK commit -F message file "${messageFile}" resolves inside the repository; an in-repo message file would dirty the clean-tree arming check. The message file must live outside the repository; author it with the prepare_pr_feedback_commit_message tool and pass the returned path`,
+				);
+			}
+		}
 		await assertPrFeedbackReadyToPublish(directory, sessionID);
 		return;
+	}
+	if (isStandaloneGitAddShell) {
+		// Issue #3315 D3: the one sanctioned staging surface. Only an exact
+		// `git add -- <paths>` shape whose every path sits inside the
+		// current changed-path set (the set the revision digest hashes) is
+		// admitted, under the same ladder precondition as the approved
+		// commit. Every other form — flags, globs, pathspec magic,
+		// out-of-set paths — falls through to the fail-closed refusal
+		// below, whose message stays byte-identical. Matching is EXACT
+		// first, then case/separator-folded ONLY when that fold is
+		// unambiguous (exactly one set member) — a case-insensitive
+		// filesystem stays usable while a POSIX pair of case-variant files
+		// can never admit the wrong one (FB-13/PRR-014).
+		const stagedPaths = extractStandaloneGitAddPaths(command);
+		const changedPaths = state.prHeadSha
+			? await _test_exports.resolvePrWorkflowChangedPathSetAsync(
+					directory,
+					state.prHeadSha,
+				)
+			: null;
+		const foldToken = (token: string): string =>
+			token.replace(/\\/g, '/').replace(/^\.\//, '');
+		const tokenAdmitted = (token: string): boolean => {
+			if (changedPaths === null) return false;
+			const folded = foldToken(token);
+			// Exact separator/./-normalized match (case preserved) admits
+			// directly. Otherwise a case-folded match admits ONLY when it is
+			// unambiguous — a POSIX pair of case-variant files can never
+			// admit the wrong one (FB-13/PRR-014).
+			if (changedPaths.has(folded)) return true;
+			let foldedMatches = 0;
+			for (const member of changedPaths) {
+				if (member.toLowerCase() === folded.toLowerCase()) {
+					foldedMatches += 1;
+					if (foldedMatches > 1) return false;
+				}
+			}
+			return foldedMatches === 1;
+		};
+		if (
+			changedPaths !== null &&
+			stagedPaths.length > 0 &&
+			stagedPaths.every(tokenAdmitted)
+		) {
+			await assertPrFeedbackReadyToPublish(directory, sessionID);
+			return;
+		}
 	}
 	if (isPublicationShell || isPublicationTool) {
 		throw new Error(
@@ -13372,6 +13644,15 @@ export async function enforcePrWorkflowToolBefore(
 	// the armed-state refusal, so letting it past the verification gate here
 	// does not weaken publication safety.
 	if (normalizedTool === 'abort_pr_workflow') return;
+	// Issue #3315 D1/D2: read-only observation and the base-sync rebind must
+	// be reachable from a bound-but-unverified PR_FEEDBACK state, exactly like
+	// abort_pr_workflow above. Observation publishes nothing; the rebind itself
+	// invalidates every ancestry-bound receipt and publishes nothing, so
+	// neither weakens the verification ladder the way an early write would.
+	// Scope: ONLY rebind joins abort's carve-out — every other controller tool
+	// keeps the verification-settled requirement.
+	if (normalizedTool === 'rebind_pr_feedback_head' || isTrustedObserveTool)
+		return;
 	await assertPrFeedbackVerificationSettled(directory, sessionID);
 }
 
@@ -14334,6 +14615,12 @@ export const _test_exports = {
 	resolveCommitCountSinceAsync,
 	resolveIsWorkingTreeClean,
 	resolveIsWorkingTreeCleanAsync,
+	resolveLocalRefHeadAsync,
+	resolveIsAncestorAsync,
+	fastForwardToRefAsync,
+	resolveRepoTopLevelAsync,
+	resolvePrWorkflowChangedPathSetAsync,
+	resolveWorkingTreeDirtyPathsAsync,
 	resolveIsExactSingleChildCommit,
 	resolveIsExactSingleChildCommitAsync,
 	resolvePrReviewDiffStats,
@@ -14712,9 +14999,14 @@ const PR_REVIEW_CONTROLLER_TOOLS = new Set([
 	'write_pr_review_trigger_eval',
 ]);
 
+/** Issue #3315 AC22: how many dirty paths a refusal names before "of N". */
+const PR_WORKFLOW_DIRTY_PATH_DISCLOSURE_LIMIT = 5;
+
 const PR_FEEDBACK_CONTROLLER_TOOLS = new Set([
 	'invalidate_pr_feedback_publication',
+	'prepare_pr_feedback_commit_message',
 	'prepare_pr_feedback_scope',
+	'rebind_pr_feedback_head',
 	'run_pr_feedback_stage_a',
 ]);
 
@@ -15464,6 +15756,304 @@ function describeShellSyntaxViolation(command: string): string | null {
 			return 'Reason: literal `|` is only allowed inside a double-quoted `gh api --jq` value or a double-quoted `git grep -E` pattern operand; single quotes do not protect pipes under cmd.exe, and every other shape is treated as compound shell syntax.';
 		default:
 			return 'Reason: compound-syntax (;, &&, |, <, >, backtick, or $()/@()). Run ONE command per call; a single leading `cd <dir> &&` and a trailing `2>&1` are tolerated for reads only.';
+	}
+}
+
+/**
+ * Issue #3315 E3: the two diagnostic recovery commands must stay reachable for
+ * the architect while a PR workflow gate is active. Deliberately NARROWER than
+ * isAllowedRecoverySwarmCommand (guardrails/nontransient-circuit.ts), which
+ * also admits state-mutating commands (`handoff`, `full-auto …`) that PR modes
+ * keep rejecting; the `diagnosis` alias is likewise not admitted here.
+ */
+function isPrWorkflowRecoverySwarmCommandArgs(
+	args: Record<string, unknown> | undefined,
+): boolean {
+	const raw =
+		typeof args?.command === 'string'
+			? args.command
+			: typeof args?.subcommand === 'string'
+				? args.subcommand
+				: '';
+	const parts = raw.trim().toLowerCase().split(/\s+/).filter(Boolean);
+	if (parts.length === 0) return false;
+	if (parts[0] === 'diagnose') return true;
+	return parts[0] === 'guardrail' && parts[1] === 'reset';
+}
+
+/**
+ * Issue #3315 D3: the one sanctioned staging shape — `git add -- <path...>`
+ * with no flags at all, no globs, no pathspec magic. Paths are read through
+ * the same shell-faithful tokenizer as the commit classifier, so a balanced
+ * quoted path arrives unquoted exactly as a real shell would deliver it.
+ * Every path
+ * must additionally be inside the current changed-path set (checked at
+ * admission time against the same enumeration the revision digest hashes), so
+ * ignored or unhashed content can never be staged through this surface.
+ */
+function isSafeStandaloneGitAdd(command: string): boolean {
+	if (hasUnsafeShellControlSyntax(command)) return false;
+	const match = /^git\s+add\s+--\s+(.+)$/i.exec(command.trim());
+	if (!match) return false;
+	const paths = extractStandaloneGitAddPaths(command);
+	return paths.length > 0 && paths.every((token) => isSanctionedAddPath(token));
+}
+
+/** Path tokens accepted by the sanctioned `git add --` shape (D3). */
+function isSanctionedAddPath(token: string): boolean {
+	if (token.length === 0) return false;
+	if (/["'`\\]/.test(token)) return false;
+	// [*?] and [ ] are git wildmatch glob metacharacters: a literal bracketed
+	// filename would wildmatch-expand to sibling paths at execution, staging
+	// content the digest never hashed (PRR-014).
+	if (/[*?[\]]/.test(token)) return false;
+	if (token.includes(':')) return false;
+	if (token.startsWith('-')) return false;
+	return true;
+}
+
+/**
+ * Extract the path tokens of a sanctioned `git add -- <paths>` command (D3)
+ * through the same shell-faithful tokenizer as the commit classifier (FB-24:
+ * the previous whitespace split honored JS \s, which includes NBSP/formfeed
+ * that cmd/POSIX deliver INSIDE the argv word).
+ */
+function extractStandaloneGitAddPaths(command: string): string[] {
+	const tokens = tokenizeStandaloneGitCommand(command);
+	if (tokens.length < 3) return [];
+	if (tokens[0].quoted || tokens[0].text.toLowerCase() !== 'git') return [];
+	if (tokens[1].quoted || tokens[1].text.toLowerCase() !== 'add') return [];
+	const separator = tokens[2];
+	if (!separator || separator.text !== '--') return [];
+	return tokens
+		.slice(3)
+		.map((token) => token.text)
+		.filter(Boolean);
+}
+
+/**
+ * Quote-aware tokenizer for standalone git commands (issue #3315 D8): a
+ * character scanner that models how cmd.exe/PowerShell/POSIX all treat double
+ * quotes — quote characters are dropped, whitespace inside quotes does not
+ * split, and a quote may OPEN MID-TOKEN (gluing: `-m"docs: -F"` is the single
+ * argv `-mdocs: -F`, an attached -m operand, not a -F flag). A token whose
+ * first character came from inside quotes is marked quoted and is never
+ * treated as an option flag; `-F` inside a `-m "…"` message operand stays
+ * message text, exactly as git itself would read it.
+ */
+function tokenizeStandaloneGitCommand(
+	command: string,
+): Array<{ text: string; quoted: boolean }> {
+	const tokens: Array<{ text: string; quoted: boolean }> = [];
+	let current = '';
+	let started = false;
+	let beganQuoted = false;
+	let inQuotes = false;
+	const flush = () => {
+		if (started) {
+			tokens.push({ text: current, quoted: beganQuoted });
+		}
+		current = '';
+		started = false;
+		beganQuoted = false;
+	};
+	for (const ch of command) {
+		if (ch === '"') {
+			if (!started) {
+				started = true;
+				beganQuoted = true;
+			}
+			inQuotes = !inQuotes;
+			continue;
+		}
+		// Split ONLY on the characters cmd.exe and POSIX IFS treat as
+		// separators outside quotes — space, tab, newline. JS \s additionally
+		// matches NBSP/formfeed/vtab, which those shells deliver INSIDE the
+		// argv word; splitting there would mis-resolve an attached -F value
+		// as absolute when the shell-faithful value is relative (in-repo).
+		if (!inQuotes && (ch === ' ' || ch === '\t' || ch === '\n')) {
+			flush();
+			continue;
+		}
+		started = true;
+		current += ch;
+	}
+	flush();
+	return tokens;
+}
+
+/**
+ * Index of the `commit` subcommand token, or -1. Only tokens BEFORE this
+ * index are global git options (where `-C <dir>` relocates the working
+ * directory); after it, `-C` is git-commit's --reuse-message, never a cwd.
+ */
+function standaloneGitCommitSubcommandIndex(
+	tokens: Array<{ text: string; quoted: boolean }>,
+): number {
+	for (let i = 0; i < tokens.length; i += 1) {
+		if (!tokens[i].quoted && tokens[i].text === 'commit') return i;
+	}
+	return -1;
+}
+
+/**
+ * Issue #3315 D8/AC25 (feedback round: PRR-001/002): extract the message-file
+ * argument git actually reads from a standalone `git commit`. git binds
+ * -F/--file to ONE variable with LAST occurrence winning, so every occurrence
+ * is recorded and the last is returned. The walk models git parse-options:
+ * - long options with an attached `=value` never consume the next token;
+ *   `--file=`/unambiguous abbreviations of it (`--fil=` — `--fi=` is
+ *   ambiguous and errors in git) resolve to the message file in both the
+ *   attached and space-separated forms;
+ * - short-option CLUSTERS are walked char by char: boolean shorts continue,
+ *   a value-taking short (c/C/m/t) consumes the rest of the token (attached)
+ *   or the next token (bare) and ends the cluster, and an `F` in a cluster
+ *   takes the rest of the token (attached) or the next token as the message
+ *   file;
+ * - operands of every value-taking git-commit option are consumed as values
+ *   (a `-F` inside a commit message, an author, or a cleanup mode is operand
+ *   text, not a flag);
+ * - an unquoted `--` terminates option parsing (everything after it is a
+ *   pathspec);
+ * - leading `^` characters are stripped before flag-position tests (cmd.exe
+ *   escape: `^-F x` delivers `-F x` under cmd, a literal unknown rev under
+ *   POSIX — over-detection there is a harmless false refusal).
+ * Null when the commit carries no message-file argument.
+ */
+function extractStandaloneGitCommitMessageFile(command: string): string | null {
+	const tokens = tokenizeStandaloneGitCommand(command);
+	const subcommand = standaloneGitCommitSubcommandIndex(tokens);
+	if (subcommand < 0) return null;
+	let lastMessageFile: string | null = null;
+	for (let i = subcommand + 1; i < tokens.length; i += 1) {
+		// Flag POSITION is evaluated on the quote-stripped, caret-stripped
+		// text: every supported shell strips quotes around a bare flag and
+		// cmd.exe strips carets, so `git commit "-F" x` and `^-F x` deliver a
+		// real -F to git. Quoted OPERANDS are protected by the consumption
+		// branches below, not by skipping quoted tokens here.
+		const token = tokens[i];
+		const text = token.text.replace(/^\^+/, '');
+		if (text === '--') break; // pathspec terminator: no flags after it
+		if (text === '-F' || text === '--file') {
+			const value = tokens[i + 1];
+			lastMessageFile = value === undefined ? null : value.text;
+			continue;
+		}
+		if (GIT_COMMIT_VALUE_TAKING_OPTIONS.has(text)) {
+			i += 1; // the next token is this option's operand, never a flag
+			continue;
+		}
+		if (text.startsWith('--')) {
+			const eq = text.indexOf('=');
+			if (eq < 0) {
+				// Space-form unambiguous abbreviation of --file (--fil x): the
+				// next token is the message file. (--fi is ambiguous and never
+				// reaches git.)
+				if (/^--fil$/i.test(text)) {
+					const value = tokens[i + 1];
+					lastMessageFile = value === undefined ? null : value.text;
+					i += 1;
+				}
+				continue;
+			}
+			const name = text.slice(2, eq).toLowerCase();
+			if (name === 'file' || name === 'fil') {
+				lastMessageFile = text.slice(eq + 1);
+			}
+			continue;
+		}
+		if (text.startsWith('-') && text.length > 1) {
+			// Short-option cluster walk (git parse-options semantics): boolean
+			// shorts continue, a value-taking short (c/C/m/t) consumes the rest
+			// of the token (attached) or the next token (bare) and ends the
+			// walk, and F records the message file from its attached rest or
+			// the next token.
+			let consumedNext = false;
+			for (let p = 1; p < text.length; p += 1) {
+				const c = text[p];
+				if (c === 'F') {
+					const rest = text.slice(p + 1);
+					if (rest.length > 0) {
+						lastMessageFile = rest;
+					} else {
+						lastMessageFile = tokens[i + 1]?.text ?? null;
+						consumedNext = true;
+					}
+					break;
+				}
+				if ('cCmt'.includes(c)) {
+					if (p + 1 >= text.length) consumedNext = true;
+					break;
+				}
+				// Boolean short (a, e, i, n, q, s, v, ...): keep walking.
+			}
+			if (consumedNext) i += 1;
+		}
+	}
+	return lastMessageFile;
+}
+
+/**
+ * The finite git-commit option set that REQUIRES a value in the
+ * space-separated form (git parse-options consumes the next argv
+ * unconditionally for these). `--untracked-files`/`-u` deliberately absent:
+ * their value is optional, so a following `-F` stays a real flag.
+ */
+const GIT_COMMIT_VALUE_TAKING_OPTIONS: ReadonlySet<string> = new Set([
+	'-m',
+	'--message',
+	'-c',
+	'--reedit-message',
+	'-C',
+	'--reuse-message',
+	'-t',
+	'--template',
+	'--fixup',
+	'--squash',
+	'--author',
+	'--date',
+	'--cleanup',
+	'--trailer',
+	'--pathspec-from-file',
+]);
+
+/**
+ * Issue #3315 D8/AC25: the working base a standalone git command resolves
+ * paths against — the GLOBAL `-C <dir>` relocation (which only appears before
+ * the subcommand; `git commit -C <x>` is --reuse-message), else the gate
+ * directory.
+ */
+function resolveStandaloneGitCommandCwd(
+	command: string,
+	directory: string,
+): string {
+	const tokens = tokenizeStandaloneGitCommand(command);
+	const subcommand = standaloneGitCommitSubcommandIndex(tokens);
+	const limit = subcommand >= 0 ? subcommand : tokens.length;
+	for (let i = 0; i < limit; i += 1) {
+		if (!tokens[i].quoted && tokens[i].text === '-C' && tokens[i + 1]) {
+			return path.resolve(directory, tokens[i + 1].text);
+		}
+	}
+	return directory;
+}
+
+/**
+ * Issue #3315 D8/AC25: containment of an ABSOLUTELY resolved path against the
+ * repository root, lexically first and — when the target exists — through
+ * realpath on both sides so a junction/symlink that lands inside cannot pose
+ * as an outside-repo file.
+ */
+function isPathInsideRepository(target: string, repoRoot: string): boolean {
+	const lexicalInside = (value: string, root: string): boolean => {
+		const rel = path.relative(root, value);
+		return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
+	};
+	if (lexicalInside(target, repoRoot)) return true;
+	try {
+		return lexicalInside(realpathSync(target), realpathSync(repoRoot));
+	} catch {
+		return false;
 	}
 }
 

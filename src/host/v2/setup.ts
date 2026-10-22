@@ -43,7 +43,7 @@ async function deferredV2StartupModelPreflight(
 			//    quiet-gated exactly like the v1 preflight's console.warn.
 			addDeferredWarning(warning);
 			if (!quiet) {
-				// biome-ignore lint/suspicious/noConsole: #3022 AC4 startup roster warning must be visible without OPENCODE_SWARM_DEBUG (same rationale as the index.ts version banner), gated on config.quiet like the v1 preflight
+				// biome-ignore lint/suspicious/noConsole: #3022 AC4 startup roster warning must be visible without OPENCODE_SWARM_DEBUG, gated on config.quiet like the v1 preflight
 				console.warn(warning);
 			}
 		}
@@ -107,7 +107,7 @@ import { log } from '../../utils';
 import { resolveProjectRootDecision } from '../../utils/project-boundary';
 import { withTimeout } from '../../utils/timeout';
 import { registerV2AgentsAndCommands } from './agents-commands';
-import { startDeferredEventPump } from './events';
+import { clearToolNameRegistry, startDeferredEventPump } from './events';
 import { registerV2ContextHook } from './guidance';
 import { registerV2SessionHooks, registerV2ToolHooks } from './hooks';
 import {
@@ -353,6 +353,11 @@ export async function openCodeSwarmV2Setup(
 		// next cleanup (documented in the trace).
 		clearV2SessionClientState();
 		clearV2AgentTransformSurface();
+		// #3401: the pump-side tool-name registry must not outlive the pump —
+		// stale (session,call)→name residue would put a re-setup under
+		// eviction pressure (and could hand a recycled dispatch id a stale
+		// name).
+		clearToolNameRegistry();
 		for (const registration of state.registrations) {
 			try {
 				await withTimeout(
