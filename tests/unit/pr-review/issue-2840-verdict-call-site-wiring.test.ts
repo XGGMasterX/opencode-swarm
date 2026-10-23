@@ -66,14 +66,17 @@ function productionCallSites(): Array<{
 
 describe('issue #2840 — allowedPrReviewReportVerdicts call-site wiring ratchet', () => {
 	test('the production call-site set is exactly the pinned five sites', () => {
-		const sites = productionCallSites().map(
-			(site) => `${site.file}:${site.line}`,
-		);
+		// readdirSync order is filesystem-dependent: self-hosted runners return
+		// src/ entries in a different order than GitHub's images, so the walk
+		// must be normalized to one deterministic order before pinning.
+		const sites = productionCallSites()
+			.map((site) => `${site.file}:${site.line}`)
+			.sort();
 		expect(sites).toEqual([
-			'src/hooks/pr-workflow-gate.ts:12285', // readPrReviewFinalFindingPolicyForReport
-			'src/hooks/pr-workflow-gate.ts:13890', // dispatchCoverageFinalization message formatting
-			'src/hooks/pr-workflow-gate.ts:14025', // completion preflight
-			'src/hooks/pr-workflow-gate.ts:14066', // completion post-ladder finding-policy check
+			'src/hooks/pr-workflow-gate.ts:12309', // readPrReviewFinalFindingPolicyForReport
+			'src/hooks/pr-workflow-gate.ts:14178', // dispatchCoverageFinalization message formatting
+			'src/hooks/pr-workflow-gate.ts:14313', // completion preflight
+			'src/hooks/pr-workflow-gate.ts:14354', // completion post-ladder finding-policy check
 			'src/pr-review/completion.ts:1721', // readPrReviewTerminalCoverageForReport
 		]);
 	});

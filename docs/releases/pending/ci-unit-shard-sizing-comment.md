@@ -8,8 +8,7 @@ the measured state (2026-10-18): ~685 gated files per shard (4,118 files on Linu
 and 4,112 on Windows after quarantines, over 6 shards) and Windows unit cells of
 ~19-37 min (median ~29 min, test step median ~1650 s; 84 executed cells across
 14 merge_group runs incl. 4 that failed on test results) against the 40-minute
-timeout, leaving as little as ~3 min of headroom. The stale "~278 per-file coverage runs" in the coverage-shard
-comment is corrected to ~686 (coverage step median ~768 s).
+timeout, leaving as little as ~3 min of headroom.
 
 ## Why
 

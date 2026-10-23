@@ -1,5 +1,20 @@
 # Changelog
 
+## [7.199.3](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.199.2...v7.199.3) (2026-10-22)
+
+
+### Bug Fixes
+
+* **ci:** correct stale action version comments after dependabot pin merges ([d404333](https://github.com/ZaxbyHub/opencode-swarm/commit/d404333a18952780bf90d848597c6430bc008298))
+* **ci:** correct stale action version comments after dependabot pin merges ([282c8ec](https://github.com/ZaxbyHub/opencode-swarm/commit/282c8ecde47a2a11e0ddd2f070ee57c1a56d425a))
+* **pr-feedback:** close PR-review findings PRR-001..015 ([#3419](https://github.com/ZaxbyHub/opencode-swarm/issues/3419)) ([d4d39f3](https://github.com/ZaxbyHub/opencode-swarm/commit/d4d39f33b5f94953362299ca18be1cf7d5e16949))
+* **pr-feedback:** make rework recoverable — scope-bound writes, one sanctioned soft reset, re-dispatchable verification ([#3316](https://github.com/ZaxbyHub/opencode-swarm/issues/3316)) ([ed0dd10](https://github.com/ZaxbyHub/opencode-swarm/commit/ed0dd10d8e6de915038f75d422d1229ee1c90b04))
+* **pr-feedback:** make rework recoverable — scope-bound writes, one sanctioned soft reset, re-dispatchable verification ([#3316](https://github.com/ZaxbyHub/opencode-swarm/issues/3316)) ([b40614c](https://github.com/ZaxbyHub/opencode-swarm/commit/b40614cf5353b8242a53bf76dd597ca5f8d05c49))
+* **pr-feedback:** resolved-path containment for consumed-scope writes + traversal/foreign-mismatch floor legs (review round 1) ([94a148c](https://github.com/ZaxbyHub/opencode-swarm/commit/94a148c4382df60dafb0be5f624fa8fab353a2fc))
+* **tui:** address PR review findings on the [#3405](https://github.com/ZaxbyHub/opencode-swarm/issues/3405) init-path change ([70f2b4e](https://github.com/ZaxbyHub/opencode-swarm/commit/70f2b4eada36affce24d0ad0d0feca51aa2add43)), closes [#3416](https://github.com/ZaxbyHub/opencode-swarm/issues/3416)
+* **tui:** close the console-emitter gaps the review round found ([4cc33fa](https://github.com/ZaxbyHub/opencode-swarm/commit/4cc33fa999b0efbd45e5e150d15130382ad6cd4b)), closes [#3416](https://github.com/ZaxbyHub/opencode-swarm/issues/3416)
+* **tui:** drop raw console.warn legs on the init path ([6c68fc7](https://github.com/ZaxbyHub/opencode-swarm/commit/6c68fc7af4e3638632243dff1b500027d9b491ed))
+
 ## [7.199.2](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.199.1...v7.199.2) (2026-10-21)
 
 
