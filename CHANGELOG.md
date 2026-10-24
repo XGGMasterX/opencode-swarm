@@ -1,5 +1,18 @@
 # Changelog
 
+## [7.199.5](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.199.4...v7.199.5) (2026-10-24)
+
+
+### Bug Fixes
+
+* **citations:** re-pin target-constant-tmp producer after checkpoint.ts shift (CI round 6) ([cb96a2d](https://github.com/ZaxbyHub/opencode-swarm/commit/cb96a2d7f3a85329899d91b76dc08e3b3b5f1634))
+* **close:** async, diagnosable git-status gate reads for close, rollback, and diagnose ([#3317](https://github.com/ZaxbyHub/opencode-swarm/issues/3317)) ([8e5cfd3](https://github.com/ZaxbyHub/opencode-swarm/commit/8e5cfd3872851b57f8ae3cfb25d0fc06bc0cac85))
+* **close:** close out swarm-pr-review [#3426](https://github.com/ZaxbyHub/opencode-swarm/issues/3426) findings — failure classes, Node ENOENT, deadline honesty ([d695ffe](https://github.com/ZaxbyHub/opencode-swarm/commit/d695ffe2e08eaac988a2801277c475ab7a69f504))
+* **git-status-read:** classify signalCode exits ESIGNAL, rescoping kill claims to measured reachability + close five coverage pins (review round 2) ([c2615bc](https://github.com/ZaxbyHub/opencode-swarm/commit/c2615bc3dfcd8573c776a14cb1255daf8a9aa639))
+* **git-status-read:** give the retained partial stderr its EOUTPUT consumer (review round 2 nit) ([48c20db](https://github.com/ZaxbyHub/opencode-swarm/commit/48c20db55a56928bbcc48a725f73e7ef887b44d3))
+* **git-status-read:** race resolution against the deadline + cap async probes by remaining budget (automation review) ([7e3bc29](https://github.com/ZaxbyHub/opencode-swarm/commit/7e3bc29ffe795a5ab9d8b7303d1a57c795a792e1))
+* **pr-review:** reach a disclosed INCOMPLETE and settle finished lanes ([#3312](https://github.com/ZaxbyHub/opencode-swarm/issues/3312) [#3313](https://github.com/ZaxbyHub/opencode-swarm/issues/3313)) ([f11fbea](https://github.com/ZaxbyHub/opencode-swarm/commit/f11fbea9059382a0fde40a6cd7744a95e40d38bb))
+
 ## [7.199.4](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.199.3...v7.199.4) (2026-10-23)
 
 
