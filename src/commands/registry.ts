@@ -464,8 +464,10 @@ async function handlePrFeedbackCommandWithTransition(
 			: `/swarm pr-feedback continue from ${parsed.continuation.handoffPath}`;
 		// Issue #2506 review round 2: the PR_REVIEW→PR_FEEDBACK continuation is
 		// a third settlement entry point, so it resolves the watchdog policy
-		// exactly like the abort/complete tools (fail-open to disabled) and
-		// threads it through — the ONE effective horizon covers this path too.
+		// exactly like the abort/complete tools (a config-read failure keeps
+		// the watchdog off — the explicit opt-out semantics, independent of
+		// the schema default) and threads it through — the ONE effective
+		// horizon covers this path too.
 		let laneLiveness: PrWorkflowLaneLivenessOptions | undefined;
 		try {
 			const config = loadPluginConfig(ctx.directory);
@@ -480,8 +482,9 @@ async function handlePrFeedbackCommandWithTransition(
 						: undefined,
 			};
 		} catch {
-			// Config read failure must not block the continuation; the disabled
-			// default is always safe.
+			// Config read failure must not block the continuation. The
+			// fallback keeps the watchdog off (the explicit opt-out
+			// semantics), independent of the schema's default.
 		}
 		await transitionPrReviewToFeedback(ctx.directory, ctx.sessionID, {
 			runId: parsed.continuation.runId,

@@ -1,5 +1,12 @@
 # Changelog
 
+## [7.199.4](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.199.3...v7.199.4) (2026-10-23)
+
+
+### Bug Fixes
+
+* stop rolling back release-please-owned files ([0920b8c](https://github.com/ZaxbyHub/opencode-swarm/commit/0920b8c8d9241d974a9efda0c51c891c5bc26d5b))
+
 ## [7.199.3](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.199.2...v7.199.3) (2026-10-22)
 
 

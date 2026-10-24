@@ -92,7 +92,7 @@ Generated from `PluginConfigSchema` (`src/config/schema.ts`) - do not edit insid
 | `hooks` | object | — | Hook subsystem toggles and settings. | src/commands/registry.ts:handlePrFeedbackCommandWithTransition (+3) |
 | `pr_review_resilience` | object (strict) | — | PR review base-wave staged canary/fanout resilience settings. | src/tools/dispatch-lanes.ts:executeDispatchLanesAsync (+1) |
 | `review_routing` | object (strict) | — | Semantic review routing receipt enforcement for Stage B (default on; set enforce_receipts=false only as a one-release rollback). | src/background/stage-b-gates.ts:ingestBackgroundStageBCompletion (+3) |
-| `lane_liveness_watchdog` | object (strict) | — | Lane liveness watchdog: execution deadline and stall escalation for PR workflow lanes. | src/commands/registry.ts:handlePrFeedbackCommandWithTransition (+3) |
+| `lane_liveness_watchdog` | object (strict) | {} | Lane liveness watchdog (default on; set enabled=false to opt out): execution deadline and stall escalation for PR workflow lanes. | src/commands/registry.ts:handlePrFeedbackCommandWithTransition (+3) |
 | `dispatch_protection` | object (strict) | — | Dispatch protection: action-local spawn-failure circuit breaker and token-bucket rate limiting for native task delegations. | src/index.ts:initializeOpenCodeSwarm (+1) |
 | `pr_review_legacy_transcript_compatibility` | boolean | — | Deprecated migration-only opt-in for transcript-row PR-review base and micro discovery lanes. | src/tools/dispatch-lanes.ts:launchAsyncLane (+1) |
 | `gates` | object | — | Quality gate configuration (v6.9 anti-slop features). | src/config/loader.ts:sanitizeGatesConfig (+2) |
@@ -173,7 +173,7 @@ Sections marked `(strict)` reject unknown nested keys at config load time - a ty
 ## Architect prompt budget (characters and model tokens)
 
 The architect's built-in prompt composition is bounded by a published
-character ceiling, `ARCHITECT_PROMPT_BUDGET_CHARS` (164,000 chars in
+character ceiling, `ARCHITECT_PROMPT_BUDGET_CHARS` (165,000 chars in
 `src/agents/architect.ts`). Every supported feature combination — the default
 render, the work-complete council on or off, the advisory General Council
 (`council.general.enabled`) composed together with every documented opt-in
@@ -193,7 +193,7 @@ Two separate quantities are measured and recorded for every composition:
 - **Model tokens** — an estimate only (`estimateModelTokens`, roughly 4
   characters per token, rounded up). Real token usage varies by model and
   content; the estimate is reported next to the character count, never instead
-  of it, so a ~41K-token estimate at the 164K-char ceiling is understood as an
+  of it, so a ~41K-token estimate at the 165K-char ceiling is understood as an
   approximation of the system prompt's share of a 128K-token context window.
 
 Overflow policy (deterministic, guidance-preserving):
@@ -1093,24 +1093,28 @@ Behavior notes:
 ### lane_liveness_watchdog
 
 Controls the lane-liveness watchdog for PR workflow lanes (issue #2506): a
-typed execution deadline and an advisory stall escalation. **Disabled by
-default.** An omitted section, or `enabled: false`, is a full no-op — PR-lane
-settlement stays byte-identical to the pre-#2506 substrate (age-only
-settlement, the fail-open liveness probe, probe retention, and the
-human-only force abort). Each numeric field disables its own feature at `0`
-while leaving the others armed.
+typed execution deadline and an advisory stall escalation. **Enabled by
+default** (flipped from the original #2506 default-off contract by the
+#3312/#3313 settlement-honesty work): an omitted section and an empty
+section `{}` both resolve the enabled watchdog with the frozen defaults
+below, so every PR-lane settlement observes one coherent policy without any
+configuration. `enabled: false` is the full opt-out — with it (and only with
+it, short of a `0` knob) PR-lane settlement is byte-identical to the
+pre-#2506 substrate (age-only settlement, the fail-open liveness probe,
+probe retention, and the human-only force abort). Each numeric field still
+disables its own feature at `0` while leaving the others armed.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `enabled` | boolean | `false` | Arm the watchdog. `false` (or omitted) runs no probes, writes no watchdog events, and never changes the settlement horizon. |
-| `timeout_ms` | number | `1800000` | When enabled and non-zero, the single effective PR-lane settlement horizon in milliseconds (0–86400000). `0` disables the execution deadline and restores the reachability-floor fallback. |
+| `enabled` | boolean | `true` | Arm the watchdog (default). `false` runs no probes, writes no watchdog events, and forces the 30-minute reachability floor as the settlement horizon, overriding any `timeout_ms`. |
+| `timeout_ms` | number | `1800000` | When enabled and non-zero, the single effective PR-lane settlement horizon in milliseconds (0–86400000); the default equals the 30-minute reachability floor. `0` disables the execution deadline and restores the reachability-floor fallback. |
 | `stall_threshold_ms` | number | `300000` | Activity window for stall detection in milliseconds (0–86400000). Stall escalation is active only when this and both thresholds below are non-zero. |
 | `stall_min_steps` | number | `5` | Observable transcript steps within the window that count as progress (0–10000). |
 | `stall_token_threshold` | number | `200` | Estimated tokens within the window that count as progress (0–1000000). |
 
 **The single effective horizon.** An enabled watchdog with `timeout_ms > 0`
-owns the PR-lane settlement horizon. Everything else — no config,
-`enabled: false`, or `timeout_ms: 0` — falls back to the 30-minute
+owns the PR-lane settlement horizon. Everything else — `enabled: false` (the
+opt-out) or `timeout_ms: 0` — falls back to the 30-minute
 reachability floor (`DEFAULT_STALE_DELEGATION_TIMEOUT_MS`), which must never
 disappear: it is the guarantee that abort and completion cannot be
 permanently blocked by a lane whose backing process died. A disagreement
@@ -1166,7 +1170,9 @@ conservative direction for stall escalation (escalate, then let the
 operator inspect). A structured `stall` block on each escalation event
 carries the first escalated lane's observed values beside those thresholds.
 
-**Example** — opt in with the frozen defaults (30-minute horizon, 5-minute stall window, 5 steps / ~200 estimated tokens):
+**Example** — the default: watchdog on with the frozen defaults (30-minute
+horizon, 5-minute stall window, 5 steps / ~200 estimated tokens). An omitted
+or empty section resolves exactly this policy:
 
 ```json
 {
@@ -1176,7 +1182,8 @@ carries the first escalated lane's observed values beside those thresholds.
 }
 ```
 
-**Example** — the default: watchdog off, settlement unchanged:
+**Example** — opt out entirely (settlement falls back to the age-only
+substrate described above):
 
 ```json
 {

@@ -1303,7 +1303,7 @@ jobs:
                 find test -name '*.test.ts' -type f
               fi
             fi
-          } | sort > "$tmpdir/int-all-tests.txt"
+          } | LC_ALL=C sort > "$tmpdir/int-all-tests.txt"
           if [ ! -s "$tmpdir/int-all-tests.txt" ]; then
             echo "::error::Integration discovery produced no test files"
             exit 1
@@ -1311,8 +1311,8 @@ jobs:
           # Drop known-red pre-existing failures (issue #1705) — same rationale
           # as the unit/coverage jobs' quarantine lists. See
           # scripts/ci/quarantined-integration-tests.txt for the tracked list.
-          grep -vE '^\s*#|^\s*$' scripts/ci/quarantined-integration-tests.txt | sort > "$tmpdir/int-quarantined.txt" || true
-          comm -23 "$tmpdir/int-all-tests.txt" "$tmpdir/int-quarantined.txt" > "$tmpdir/int-gated-tests.txt"
+          grep -vE '^\s*#|^\s*$' scripts/ci/quarantined-integration-tests.txt | LC_ALL=C sort > "$tmpdir/int-quarantined.txt" || true
+          LC_ALL=C comm -23 "$tmpdir/int-all-tests.txt" "$tmpdir/int-quarantined.txt" > "$tmpdir/int-gated-tests.txt"
           item_index=0
           while IFS= read -r f; do
             if [ ! -f "$f" ]; then

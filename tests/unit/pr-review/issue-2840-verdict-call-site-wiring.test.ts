@@ -73,11 +73,14 @@ describe('issue #2840 — allowedPrReviewReportVerdicts call-site wiring ratchet
 			.map((site) => `${site.file}:${site.line}`)
 			.sort();
 		expect(sites).toEqual([
-			'src/hooks/pr-workflow-gate.ts:12309', // readPrReviewFinalFindingPolicyForReport
-			'src/hooks/pr-workflow-gate.ts:14178', // dispatchCoverageFinalization message formatting
-			'src/hooks/pr-workflow-gate.ts:14313', // completion preflight
-			'src/hooks/pr-workflow-gate.ts:14354', // completion post-ladder finding-policy check
-			'src/pr-review/completion.ts:1721', // readPrReviewTerminalCoverageForReport
+			// Re-pinned after the #3312/#3313 feedback round (branch
+			// fix/3312-3313-honest-incomplete-lane-settlement) shifted the gate
+			// lines; same five call sites, live grep values.
+			'src/hooks/pr-workflow-gate.ts:12370', // readPrReviewFinalFindingPolicyForReport
+			'src/hooks/pr-workflow-gate.ts:14502', // dispatchCoverageFinalization message formatting
+			'src/hooks/pr-workflow-gate.ts:14968', // completion preflight
+			'src/hooks/pr-workflow-gate.ts:15009', // completion post-ladder finding-policy check
+			'src/pr-review/completion.ts:2044', // readPrReviewTerminalCoverageForReport
 		]);
 	});
 

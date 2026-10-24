@@ -670,6 +670,10 @@ function autoReviewEnabledByRelease(
  */
 export const CONSERVATIVE_PRESET_BASE: Readonly<Record<string, unknown>> = {
 	auto_review: { enabled: false },
+	// #3313 defaults flip (DEFAULT_FLIPS row lane_liveness_watchdog.enabled):
+	// the conservative preset restores the pre-flip default — the watchdog off,
+	// keeping PR lanes alive past the reachability floor until an operator acts.
+	lane_liveness_watchdog: { enabled: false },
 };
 
 const AutoReviewFinalConfigSchema = z.object({
@@ -3785,8 +3789,10 @@ export const DEFAULT_REVIEW_ROUTING_CONFIG: ReviewRoutingConfig = {
 };
 
 /**
- * Issue #2506 (G2): the lane-liveness watchdog. Default OFF; each numeric knob
- * disables its own feature at 0. When enabled, `timeout_ms` becomes the ONE
+ * Issue #2506 (G2): the lane-liveness watchdog. Default ON (#3313 AC14
+ * supersedes the #2506 AC1 default-off contract): an omitted section or an
+ * empty section resolves the enabled watchdog, and `enabled: false` (or a 0
+ * knob) is a full opt-out. When enabled, `timeout_ms` becomes the ONE
  * effective PR-lane settlement horizon (the 30-minute reachability floor
  * remains the fallback when the watchdog is off or `timeout_ms` is 0), and
  * stall detection escalates low-output lanes BEFORE that horizon. Parameter
@@ -3795,7 +3801,7 @@ export const DEFAULT_REVIEW_ROUTING_CONFIG: ReviewRoutingConfig = {
  */
 export const LaneLivenessWatchdogConfigSchema = z
 	.object({
-		enabled: z.boolean().default(false),
+		enabled: z.boolean().default(true),
 		timeout_ms: z.number().int().min(0).max(86_400_000).default(1_800_000),
 		stall_threshold_ms: z
 			.number()
@@ -4053,10 +4059,18 @@ export const PluginConfigSchema = z.object({
 		'Semantic review routing receipt enforcement for Stage B (default on; set enforce_receipts=false only as a one-release rollback).',
 	),
 
-	// Issue #2506 (G2): lane-liveness watchdog (default-off; 0 disables each
-	// feature; timeout_ms is the single effective PR-lane horizon when on).
-	lane_liveness_watchdog: LaneLivenessWatchdogConfigSchema.optional().describe(
-		'Lane liveness watchdog: execution deadline and stall escalation for PR workflow lanes.',
+	// Issue #2506 (G2): lane-liveness watchdog, default-ON since #3313 AC14
+	// (0 disables each feature; timeout_ms is the single effective PR-lane
+	// horizon when on; `enabled: false` is the full opt-out). The nested
+	// defaults materialize even when the entire section is omitted —
+	// `.prefault({})`, NOT `.default({})`: in Zod 4 a `.default(value)` is
+	// returned verbatim without being parsed, so `.default({})` would yield a
+	// fieldless empty object (the `.prefault({})` convention documented on
+	// LearningConfigSchema above and used by `repo_graph` below).
+	lane_liveness_watchdog: LaneLivenessWatchdogConfigSchema.prefault(
+		{},
+	).describe(
+		'Lane liveness watchdog (default on; set enabled=false to opt out): execution deadline and stall escalation for PR workflow lanes.',
 	),
 
 	// Issue #2507 (G3): dispatch protection for native task delegations —
